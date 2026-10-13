@@ -1,11 +1,11 @@
 # Tennis-Vision
 
-[![CI](https://github.com/HarshTomar1234/Tennis-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/HarshTomar1234/Tennis-Vision/actions/workflows/ci.yml)
+[![CI](https://github.com/vtruong2k3/tennis/actions/workflows/ci.yml/badge.svg)](https://github.com/vtruong2k3/tennis/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 An evidence-driven tennis computer-vision pipeline from a single broadcast camera.
 
-Players. Ball. Court geometry. Events. Rally reasoning. 3-D reconstruction.
+Players · Ball · TrackNetV3 · Hawkeye ELC · Tactical Telemetry · 3-D Reconstruction · Web Dashboard.
 
 <div align="center">
   <img src="frame_images/tennis_analysis_middle_frame107.png" width="820" alt="Tennis-Vision annotated broadcast frame with court keypoints, tracked players, ball position and shot statistics">
@@ -18,110 +18,72 @@ unsupported input is worse than an explicit refusal. Court evidence gates real-w
 geometry, event evidence gates shot measurements, and every output carries the reason it
 was accepted, downgraded, withheld or rejected.
 
-## Three findings that shaped the system
+## Quickstart & Setup Guide
 
-These are experimental findings, not product KPIs. Each one changed what the pipeline is
-willing to claim.
-
-| Finding | What the measurement says |
-|---|---|
-| **Ball**  **88.6%** detection rate<br>**42.5%** of visible-ball frames within 5 px | A position being output is not the same as accurate localization. Both numbers are needed to understand the detector. |
-| **Pose**  **85.5%** MediaPipe<br>**66.4%** SAM 3D Body | More landmark coverage did not produce better forehand/backhand task performance. Coverage and task accuracy are separate measurements. |
-| **End to end**  **89.3% / 0.600 F1**<br>**86.4% / 0.824 F1** | The best offline hit/bounce classifier was the worse product model. The shipped feature set was chosen on behaviour with real detections, not benchmark accuracy alone. |
-
-Every published figure names the script and dataset behind it. The full tables, caveats
-and rejected approaches remain below.
-
-## From broadcast pixels to a 3-D flight
-
-The same pipeline that detects the court, players and ball also reconstructs floor-anchored
-flight segments between detected events. The viewer exposes the reconstructed geometry
-together with the evidence behind each segment.
-
-<div align="center">
-  <img src="docs/public/media/3d_reconstruction.gif" width="960" alt="Animated preview of Tennis-Vision's actual interactive 3-D viewer showing reconstructed tennis flights, court geometry, segment speeds and evidence cards">
-</div>
-
-<p align="center"><em>Physics-constrained 3-D reconstruction from broadcast video. Preview captured from the generated viewer; rally speeds are not ground-truth validated.</em></p>
-
-[Open the self-contained interactive 3-D viewer](docs/public/media/tennis_vision_3d_viewer.html) · [View a static viewer screenshot](docs/public/media/tennis_vision_3d_viewer.png)
-
-The HTML viewer runs without a server, external assets or a CDN. It supports orbiting the
-scene, top/side/baseline/broadcast views, timeline playback, segment selection, evidence
-inspection and an annotated-video mode when the local demo video is present. The public
-artifact contains the 3-D scene and evidence; the source broadcast video is not bundled.
-
-## The pipeline as a system
-
-```mermaid
-flowchart LR
-    V[Broadcast video]
-
-    subgraph D[DETECTION]
-      F[FPS support]
-      P[Players + ball]
-      C[Court keypoints]
-      E[Event candidates]
-    end
-
-    subgraph G[EVIDENCE / REFUSAL]
-      CV[Court validity gate]
-      PS[Player selection gate]
-      R[Rally decoding]
-      PV[Physics validation]
-    end
-
-    subgraph M[MEASUREMENT]
-      H[Homography]
-      S[Serve and event measurements]
-      T[3-D flight reconstruction]
-      O[Reports + interactive viewer]
-    end
-
-    V --> F --> P
-    V --> C --> CV
-    P --> PS
-    P --> E --> R
-    CV --> H
-    PS --> H
-    H --> S --> PV --> T --> O
-    R --> S
+### 1. Clone the repository
+```bash
+git clone https://github.com/vtruong2k3/tennis.git
+cd tennis
 ```
 
-## When the evidence is insufficient
-
-- **Court fit fails:** real-world measurements are withheld because the homography is not trusted.
-- **Serve landing is not observed:** serve speed is refused instead of extrapolated from an unknown endpoint.
-- **The clip contains a camera cut or unsupported view:** the clip is refused with a reason and usable-frame count.
-
-The system is designed to fail explicitly rather than turn unsupported inputs into
-plausible-looking numbers.
-
-## Quickstart
-
+### 2. Python Backend Setup
 ```bash
-git clone https://github.com/HarshTomar1234/Tennis-Vision.git
-cd Tennis-Vision
-
-Place a permitted tennis video at `input_videos/input_video_2.mp4` before running the analysis command.
-
-python -m venv venv
-source venv/bin/activate            # Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate            # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 pip install -e .
 
-tennis-vision download-models       # about 140 MB
-tennis-vision analyze input_videos/input_video_2.mp4 -o output/demo.avi
+# Download pretrained AI models (YOLOv8x, TrackNet, ResNet-50 court detector)
+python scripts/download_models.py
 ```
 
-`download-models` prints one manual step. The TrackNet ball weights belong to their
-original author and their licence is unstated, so they are fetched from that project
-rather than rehosted here. Everything else downloads automatically.
+### 3. Running Analysis via CLI
+```bash
+# Analyze a video clip
+python main.py --input input_videos/input_video_2.mp4 --output output/videos/demo.avi
 
-Add `--max-frames 60` for a fast check before committing to a full run.
+# Fast test run on first 40 frames
+python main.py --input input_videos/input_video_2.mp4 --max-frames 40 --fast
+```
 
-Outputs land in `output/`: an annotated video, a per-frame stats CSV, a run summary JSON,
-and an interactive 3-D viewer as a single self-contained HTML file with no external
-dependencies.
+Outputs land in `output/`:
+- `output/videos/demo.mp4`: H.264 browser-playable video with AR overlays.
+- `output/stats/summary_*.json`: Full evidence audit & telemetry metrics.
+- `output/stats/stats_*.csv`: Per-frame positions and velocities.
+- `output/stats/trajectory3d_*.json`: 3-D ballistic arcs.
+
+### 4. Running the Web Platform (React 19 + Three.js + FastAPI)
+
+#### Start Backend Engine Server (Port 4200)
+```bash
+source .venv/bin/activate
+python engine_server.py
+```
+
+#### Start Frontend Web Application (Port 3000)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open browser at: **`http://localhost:3000`** to access:
+- **Live Video Player & AR HUD**: Scrub timeline, frame-by-frame controls, toggle ball trail and court overlays.
+- **Interactive 3-D WebGL Stage**: Orbit camera 360°, inspect parabolic flight paths, apex height ($m$), and 22×48 player heatmaps.
+- **Hawkeye ELC (ITF Rule 12)**: Automated electronic line calling with margin measurements in cm.
+- **Tactical Telemetry**: Player distance covered, top speed, average speed, and court zone percentages.
+- **Real-Time Analysis**: Drag & drop new video clips with streaming SSE logs and progress indicators.
+
+### 5. Running the Coach Tactical Dashboard (Dash / Plotly)
+```bash
+python dashboard/app.py --port 8050
+# Open browser at: http://localhost:8050
+```
+
+### 6. Running Tests
+```bash
+pytest tests/
+```
 
 ## Technical pipeline
 
