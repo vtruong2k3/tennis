@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0b0f19;
+    color: #dfe2f1;
+    overflow-x: hidden;
+  }
+
+  /* Monospace font for tabular and telemetry metrics */
+  .font-telemetry {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .font-display {
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+/* Custom glow and telemetry effects */
+.glow-volt {
+  box-shadow: 0 0 15px -2px rgba(202, 243, 0, 0.35);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 15px -2px rgba(76, 215, 246, 0.35);
+}
+
+.court-grid-pattern {
+  background-size: 20px 20px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+}

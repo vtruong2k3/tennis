@@ -1,0 +1,33 @@
+# Pre-commit hooks. CONTRIBUTING.md tells contributors to run `pre-commit install`,
+# which needs this file to exist.
+#
+# Deliberately light. The existing codebase predates any formatter, so enabling an
+# aggressive one now would bury real changes under thousands of reformatting lines and
+# make `git blame` useless. These hooks catch mistakes rather than enforce a style.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        # Model weights and video belong in Hugging Face and locally, never in git.
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      # Lint only, and only for genuine errors: syntax, undefined names, redefinitions.
+      # No formatting, no opinionated style rules.
+      #
+      # Scope matches .github/workflows/ci.yml exactly, so a green pre-commit means a
+      # green CI. It deliberately excludes F401 (unused import), for two reasons:
+      # utils/__init__.py is a re-export module where every import is "unused" by that
+      # rule's definition, and `--fix` would have DELETED those re-exports and broken
+      # the package on the next commit anyone made to that file.
+      - id: ruff
+        args: ["--select=E9,F821,F811,F823"]

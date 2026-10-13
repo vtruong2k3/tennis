@@ -1,0 +1,6 @@
+{
+  "name": "I-SPORTS",
+  "description": "Hệ thống phân tích quang học và dữ liệu telemetry thể thao đỉnh cao I-SPORTS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
