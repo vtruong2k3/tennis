@@ -51,7 +51,7 @@ export const VideoHudPlayer: React.FC = () => {
   const [showKitchenZone, setShowKitchenZone] = useState<boolean>(false);
 
   // Time scrubber state
-  const [currentTimeSec, setCurrentTimeSec] = useState<number>(18 * 60 + 2.4); // 18:02.40
+  const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
 
   // Highlights sinh từ dữ liệu thật (result.json) của run đang chọn
   const highlights: HighlightItem[] = useMemo(() => {
