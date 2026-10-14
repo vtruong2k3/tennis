@@ -110,8 +110,8 @@ def main() -> int:
             print(f"    {filename} (~{size_mb} MB) - {purpose}")
             print(f"      {instructions}\n")
 
-    # yolov8x downloads itself through ultralytics on first use, so it is not listed.
-    print("  yolov8s/yolov8x (player detection) download automatically on first run.\n")
+    # yolo11x downloads itself through ultralytics on first use, so it is not listed.
+    print("  yolo11x (player detection) downloads automatically on first run.\n")
 
     if not ok or missing_manual:
         print("Some weights are still missing - the pipeline will fail until they are "

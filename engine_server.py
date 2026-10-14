@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+import cv2
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
@@ -40,6 +41,10 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from sse_starlette.sse import EventSourceResponse
+
+from utils.match_aggregator import aggregate_match_runs
+from utils.rally_segmenter import segment_video_rallies
+from utils.web_video import to_browser_playable
 
 # Setup logging
 logging.basicConfig(
@@ -158,11 +163,25 @@ async def get_run_file(run_id: str, name: str):
 # ── 3. Fetch AR data ────────────────────────────────────────────────────────
 
 @app.get("/internal/v1/test/runs/{run_id}/ar-data")
-async def get_ar_data(run_id: str):
-    """Serve ar-data.json for video AR canvas overlays."""
+async def get_ar_data(
+    run_id: str,
+    rally: int | None = Query(None),
+    rallyId: int | None = Query(None),
+):
+    """Serve ar-data.json for video AR canvas overlays (supports per-rally query)."""
     run_dir = RUNS_DIR / run_id
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    target_rally = rally or rallyId
+    if target_rally is not None:
+        rally_ar_path = run_dir / "rallies" / f"rally_{target_rally:02d}" / "ar-data.json"
+        if rally_ar_path.exists():
+            try:
+                data = json.loads(rally_ar_path.read_text(encoding="utf-8"))
+                return JSONResponse(content=data)
+            except Exception as exc:
+                logger.debug(f"Failed to load rally {target_rally} AR data: {exc}")
 
     ar_path = run_dir / "ar-data.json"
     if not ar_path.exists():
@@ -178,17 +197,36 @@ async def get_ar_data(run_id: str):
 # ── 4. Stream MP4 Video with Range support ──────────────────────────────────
 
 @app.api_route("/internal/v1/test/runs/{run_id}/video", methods=["GET", "HEAD"])
-async def stream_run_video(run_id: str, request: Request):
+async def stream_run_video(
+    run_id: str,
+    request: Request,
+    rally: int | None = Query(None),
+    rallyId: int | None = Query(None),
+):
     """
     Stream H.264 video with HTTP 206 Partial Content support for smooth seeking.
+    Supports ?rally=1 or ?rallyId=1 to stream individual rally clips.
     """
     run_dir = RUNS_DIR / run_id
-    video_path = run_dir / "video.mp4"
+    target_rally = rally or rallyId
+    video_path = None
+
+    if target_rally is not None:
+        rally_candidate = run_dir / "rallies" / f"rally_{target_rally:02d}" / "video.mp4"
+        if rally_candidate.exists():
+            video_path = rally_candidate
+
+    if not video_path:
+        video_path = run_dir / "video.mp4"
 
     if not video_path.exists():
-        fallback = OUTPUT_DIR / "videos" / "test_run.mp4"
-        if fallback.exists():
-            video_path = fallback
+        for candidate in [
+            OUTPUT_DIR / "videos" / "output_video.mp4",
+            OUTPUT_DIR / "videos" / "test_run.mp4",
+        ]:
+            if candidate.exists():
+                video_path = candidate
+                break
         else:
             raise HTTPException(status_code=404, detail="Video file not found for this run")
 
@@ -319,11 +357,214 @@ def broadcast_event(run_id: str, event_data: dict[str, Any]):
 
 
 async def run_pipeline_worker(run_id: str, video_path: str):
-    """Background task executing main.py and streaming output line-by-line."""
+    """
+    Background worker executing either Two-Stage Multi-Rally Pipeline (for long videos >25s)
+    or Direct Single-Rally Pipeline (for short clips <=25s).
+    """
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.log"
+    loop = asyncio.get_running_loop()
 
+    # 1. Quick probe of video duration
+    duration_s = 0.0
+    total_frames = 0
+    fps = 30.0
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration_s = total_frames / fps if fps > 0 else 0.0
+            cap.release()
+    except Exception as exc:
+        logger.warning(f"Could not probe video duration: {exc}")
+
+    logger.info(f"Run {run_id}: input video duration={duration_s:.1f}s, fps={fps:.1f}, frames={total_frames}")
+
+    # ── TWO-STAGE PIPELINE (FOR MULTI-RALLY VIDEOS > 25s) ────────────────────
+    if duration_s > 25.0:
+        logger.info(f"Video duration {duration_s:.1f}s > 25s: Triggering Two-Stage Pipeline for run {run_id}")
+        broadcast_event(run_id, {
+            "type": "stage",
+            "stage": "rallyclip",
+            "message": f"Phát hiện video trận đấu ({duration_s:.1f}s). Đang quét phân tách các pha bóng...",
+        })
+
+        rallies_dir = run_dir / "rallies"
+        rallies_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            rally_segments = await loop.run_in_executor(
+                None,
+                lambda: segment_video_rallies(
+                    video_path,
+                    output_dir=rallies_dir,
+                    min_rally_duration_s=3.5,
+                    max_gap_tolerance_s=1.0,
+                    sample_interval_s=0.5,
+                    lead_in_buffer_s=2.2,
+                    lead_out_buffer_s=1.5,
+                ),
+            )
+        except Exception as exc:
+            logger.error(f"Rally segmentation failed: {exc}", exc_info=True)
+            rally_segments = []
+
+        if len(rally_segments) > 0:
+            logger.info(f"Found {len(rally_segments)} valid rallies in {run_id}")
+            broadcast_event(run_id, {
+                "type": "stage",
+                "stage": "rallyclip",
+                "message": f"Đã tìm thấy {len(rally_segments)} pha bóng hợp lệ! Bắt đầu phân tích chuyên sâu...",
+            })
+
+            # Brief pause to let file buffers flush cleanly on Windows
+            await asyncio.sleep(1.0)
+
+            rally_items_for_agg = []
+            for item in rally_segments:
+                idx = int(item.get("rally_index", item.get("index", 1)))
+                r_video = item.get("clip_path", item.get("file"))
+                start_s = float(item.get("start_time_s", item.get("start_s", 0.0)))
+                end_s = float(item.get("end_time_s", item.get("end_s", 0.0)))
+                item_dur = float(item.get("duration_s", 0.0))
+                r_dir = rallies_dir / f"rally_{idx:02d}"
+                r_dir.mkdir(parents=True, exist_ok=True)
+
+                rally_items_for_agg.append({
+                    "rally_index": idx,
+                    "index": idx,
+                    "start_time_s": start_s,
+                    "start_s": start_s,
+                    "end_time_s": end_s,
+                    "end_s": end_s,
+                    "duration_s": item_dur,
+                    "rally_dir": r_dir,
+                })
+
+                broadcast_event(run_id, {
+                    "type": "stage",
+                    "stage": "court",
+                    "message": f"[Pha {idx}/{len(rally_segments)}] Bắt đầu phân tích ({item_dur:.1f}s)...",
+                })
+
+                cmd = [
+                    sys.executable,
+                    str(BASE_DIR / "main.py"),
+                    "--input",
+                    str(r_video),
+                    "--run-dir",
+                    str(r_dir),
+                ]
+
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=str(BASE_DIR),
+                )
+                active_subprocesses[run_id] = proc
+
+                with open(log_file, "a", encoding="utf-8") as lf:
+                    lf.write(f"\n=== BẮT ĐẦU PHÂN TÍCH RALLY {idx}/{len(rally_segments)} ({start_s:.1f}s -> {end_s:.1f}s) ===\n")
+                    while True:
+                        line_bytes = await proc.stdout.readline()
+                        if not line_bytes:
+                            break
+                        line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                        lf.write(f"[Pha {idx}] {line}\n")
+                        lf.flush()
+
+                        stage = None
+                        if "[2/9]" in line:
+                            stage = "court"
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Nhận diện sân & đường biên..."})
+                        elif "[3/9]" in line:
+                            stage = "harsh"
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking VĐV (YOLO11x)..."})
+                        elif "[4/9]" in line:
+                            stage = "good"
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking quỹ đạo bóng (TrackNetV3)..."})
+                        elif "[5/9]" in line or "[6/9]" in line:
+                            stage = "rally"
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Phân loại cú đánh & Hawkeye ELC..."})
+                        elif "[7/9]" in line or "[8/9]" in line:
+                            stage = "rally"
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Đo đạc chiến thuật và tái tạo 3D..."})
+
+                        broadcast_event(run_id, {
+                            "type": "log",
+                            "text": f"[Pha {idx}] {line}",
+                            "stage": stage,
+                        })
+
+                await proc.wait()
+                active_subprocesses.pop(run_id, None)
+
+                # Clear CUDA memory between rallies
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            # Aggregation step
+            broadcast_event(run_id, {
+                "type": "stage",
+                "stage": "merge",
+                "message": "Đang tổng hợp dữ liệu toàn trận...",
+            })
+
+            try:
+                aggregate_match_runs(run_dir, rally_items_for_agg, original_video_path=video_path)
+            except Exception as exc:
+                logger.error(f"Match aggregation failed: {exc}", exc_info=True)
+
+            # Ensure web-playable root video.mp4 contains the FULL MATCH video
+            root_web_video = run_dir / "video.mp4"
+            if not root_web_video.exists() or root_web_video.stat().st_size == 0:
+                ffmpeg_bin = get_ffmpeg_binary()
+                if ffmpeg_bin:
+                    cmd = [
+                        str(ffmpeg_bin), "-y", "-i", str(video_path),
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                        "-c:a", "copy", str(root_web_video),
+                    ]
+                    try:
+                        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    except Exception as e_vid:
+                        logger.warning(f"Failed to transcode full match video: {e_vid}")
+
+                if not root_web_video.exists() or root_web_video.stat().st_size == 0:
+                    rally_1_video = rallies_dir / "rally_01" / "video.mp4"
+                    if rally_1_video.exists():
+                        shutil.copy2(rally_1_video, root_web_video)
+
+            meta_path = run_dir / "meta.json"
+            meta = {
+                "status": "COMPLETED",
+                "mode": "multi_rally",
+                "total_rallies": len(rally_segments),
+                "duration_s": duration_s,
+            }
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+            broadcast_event(run_id, {
+                "type": "stage",
+                "stage": "completed",
+                "message": f"Hoàn tất phân tích toàn bộ {len(rally_segments)} pha bóng!",
+            })
+            broadcast_event(run_id, {
+                "type": "done",
+                "status": "COMPLETED",
+                "files": get_run_files(run_dir),
+            })
+            return
+
+    # ── SINGLE-RALLY DIRECT PIPELINE (FALLBACK OR SHORT CLIPS <= 25s) ────────
     cmd = [
         sys.executable,
         str(BASE_DIR / "main.py"),
@@ -332,8 +573,11 @@ async def run_pipeline_worker(run_id: str, video_path: str):
         "--run-dir",
         str(run_dir),
     ]
+    max_frames_env = os.environ.get("MAX_FRAMES", "600")
+    if max_frames_env and max_frames_env.isdigit() and int(max_frames_env) > 0:
+        cmd.extend(["--max-frames", max_frames_env])
 
-    logger.info(f"Starting pipeline for run {run_id}: {' '.join(cmd)}")
+    logger.info(f"Starting single-rally pipeline for run {run_id}: {' '.join(cmd)}")
     broadcast_event(run_id, {
         "type": "stage",
         "stage": "rallyclip",
@@ -368,7 +612,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Nhận diện sân đấu và đường biên..."})
                 elif "[3/9]" in line:
                     stage = "harsh"
-                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking vận động viên (YOLOv8x)..."})
+                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking vận động viên (YOLO11x)..."})
                 elif "[4/9]" in line:
                     stage = "good"
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking quỹ đạo bóng (TrackNetV3)..."})
@@ -438,7 +682,6 @@ async def run_pipeline_worker(run_id: str, video_path: str):
             "status": "CANCELLED",
             "message": "Đã hủy phân tích",
         })
-    except Exception as exc:
         logger.exception(f"Unexpected error in run {run_id}: {exc}")
         broadcast_event(run_id, {
             "type": "done",
@@ -566,7 +809,7 @@ async def cancel_run(run_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("PORT", 4200))
+    port = int(os.environ.get("PORT", 5200))
     host = os.environ.get("HOST", "0.0.0.0")
     logger.info(f"Starting Tennis-Vision Engine server on {host}:{port}")
     uvicorn.run("engine_server:app", host=host, port=port, reload=False)

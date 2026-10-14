@@ -65,7 +65,7 @@ def build_engine_result(
 
     for f, item in shot_classifications.items():
         st = item.get("shot_type", "Groundstroke")
-        pid = hitter_by_frame.get(f)
+        pid = hitter_by_frame.get(f) if hitter_by_frame else item.get("player_id")
         if pid == 1:
             p1_types[st] = p1_types.get(st, 0) + 1
         elif pid == 2:
@@ -77,10 +77,18 @@ def build_engine_result(
             else:
                 p2_types[st] = p2_types.get(st, 0) + 1
 
-    if not p1_types and p1_shots > 0:
-        p1_types = dict(shot_types_summary) or {"Groundstroke": p1_shots}
-    if not p2_types and p2_shots > 0:
-        p2_types = dict(shot_types_summary) or {"Groundstroke": p2_shots}
+    # If shot_classifications was populated, synchronize shot counts with classified types
+    if shot_classifications:
+        if p1_types:
+            p1_shots = sum(p1_types.values())
+        if p2_types:
+            p2_shots = sum(p2_types.values())
+    else:
+        # Fallback only when no individual shot classification data exists
+        if not p1_types and p1_shots > 0:
+            p1_types = dict(shot_types_summary) or {"Groundstroke": p1_shots}
+        if not p2_types and p2_shots > 0:
+            p2_types = dict(shot_types_summary) or {"Groundstroke": p2_shots}
 
     # Tactical movement
     p1_dist = float(tactical_profiles.get("player_1", {}).get("total_distance_m", 0.0))
@@ -95,8 +103,11 @@ def build_engine_result(
     if p2_dist > 0:
         p2_side_pct = round(min(100.0, max(0.0, (p2_lat / p2_dist) * 100.0)), 1)
 
-    p1_has_serve = "Serve" in p1_types or (serve_speed > 0 and p1_shots > 0)
-    p2_has_serve = "Serve" in p2_types or (serve_speed > 0 and not p1_has_serve)
+    p1_has_serve = "Serve" in p1_types
+    p2_has_serve = "Serve" in p2_types
+    if not p1_has_serve and not p2_has_serve and serve_speed > 0:
+        p1_has_serve = (p1_shots > 0)
+        p2_has_serve = not p1_has_serve
 
     players = [
         {
@@ -251,7 +262,7 @@ def build_ar_data(
 
     # 1. Court segments & lines
     lines: dict[str, list[list[list[float]]]] = {}
-    if court_keypoints and len(court_keypoints) >= 8:
+    if court_keypoints is not None and len(court_keypoints) >= 8:
         kp = court_keypoints
         # Outer TL(0), TR(1), BL(2), BR(3)
         u_tl, v_tl = round(float(kp[0]) / W, 4), round(float(kp[1]) / H, 4)

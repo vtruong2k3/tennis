@@ -15,7 +15,7 @@ pipeline:
   use_sam3d_pose: false         # pose-based forehand/backhand (falls back to position rules when pose is unavailable)
 
 models:
-  player: "yolov8x"
+  player: "yolo11x"
   ball: "models/last.pt"
   # Geometrically fine-tuned (translation/scale/perspective/flip). Beat the original
   # weights on BOTH gates: in-distribution val median 4.03 -> 2.90 px, and real-clip

@@ -55,7 +55,7 @@ def analyse(path: str, priors: list[float | None]) -> dict:
     ball_tracker = TrackNetBallTracker(model_path="models/tracknet.pt")
     ball = ball_tracker.interpolate_ball_positions(ball_tracker.detect_frames(frames))
 
-    player_tracker = PlayerTracker(model_path="yolov8x")
+    player_tracker = PlayerTracker(model_path="yolo11x")
     people = player_tracker.detect_frames(
         frames, read_from_stub=True,
         stub_path=stub_path_for_video("tracker_stubs/player_detections.pkl", path),

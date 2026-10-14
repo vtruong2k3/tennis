@@ -91,7 +91,7 @@ def evaluate(video_path: str, gt_frames: list[int]) -> dict:
     # the rally: 25 candidates against 7 real shots, scored as 18 false-positive shots
     # and 28% precision for a stage main.py never emits. `derive_shot_frames` is the
     # same function main.py calls, so this now measures the shipped behaviour.
-    player_tracker = PlayerTracker(model_path="yolov8x")
+    player_tracker = PlayerTracker(model_path="yolo11x")
     player_det = player_tracker.detect_frames(
         frames,
         read_from_stub=True,

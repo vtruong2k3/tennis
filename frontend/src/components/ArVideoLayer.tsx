@@ -4,10 +4,13 @@ import { fetchArData, ArData, ArCourtSegment } from '../api/engine';
 
 interface Props {
   videoUrl: string;
+  rallyId?: number;
   showCourt?: boolean;
   showTrail?: boolean;
   showPlayers?: boolean;
   showKitchen?: boolean;
+  showBounces?: boolean;
+  showFullTrajectory?: boolean;
   /** Cho phép component cha điều khiển/đọc thời gian video thật. */
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   /** Gọi khi video lỗi (404, nguồn mất, decode sai...). */
@@ -25,7 +28,7 @@ const LINE_COLORS: Record<string, string> = {
 };
 
 const PLAYER_COLORS = ['#4cd7f6', '#f472b6'];
-const TRAIL_WINDOW_MS = 900;
+const TRAIL_WINDOW_MS = 1000;
 
 function interpolateLines(
   linesA: Record<string, number[][][]>,
@@ -90,15 +93,22 @@ function getActiveCourtLines(seg: ArCourtSegment, tMs: number): Record<string, n
 }
 
 /**
- * Video thật + lớp canvas overlay (sân / quỹ đạo bóng / chân VĐV)
- * tự nạp ar-data theo run hiện tại và vẽ theo video.currentTime.
+ * Video thật + lớp canvas overlay AR:
+ * - Vạch sân tennis quang học chuẩn homography
+ * - Quỹ đạo bóng AR (Real-time tail + Full Rally Arc)
+ * - Điểm nảy sân (Hawkeye Bounces với ripple hiệu ứng)
+ * - Điểm tiếp xúc vợt (Shots)
+ * - Bounding box và vị trí chân VĐV
  */
 export const ArVideoLayer: React.FC<Props> = ({
   videoUrl,
-  showCourt = false,
-  showTrail = false,
-  showPlayers = false,
-  showKitchen = false,
+  rallyId,
+  showCourt = true,
+  showTrail = true,
+  showPlayers = true,
+  showKitchen = true,
+  showBounces = true,
+  showFullTrajectory = false,
   videoRef: externalVideoRef,
   onError,
 }) => {
@@ -112,7 +122,7 @@ export const ArVideoLayer: React.FC<Props> = ({
     setArData(null);
     if (!runId) return;
     let cancelled = false;
-    fetchArData(runId)
+    fetchArData(runId, rallyId)
       .then((d) => {
         if (!cancelled) setArData(d);
       })
@@ -120,11 +130,12 @@ export const ArVideoLayer: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [runId]);
+  }, [runId, rallyId]);
 
   const segments = useMemo(() => arData?.court?.segments ?? [], [arData]);
   const trail = useMemo(() => arData?.ball?.trail ?? [], [arData]);
   const shots = useMemo(() => arData?.ball?.shots ?? [], [arData]);
+  const bounces = useMemo(() => arData?.ball?.bounces ?? [], [arData]);
   const playerSamples = useMemo(() => arData?.players?.samples ?? [], [arData]);
 
   const draw = useCallback(() => {
@@ -140,12 +151,8 @@ export const ArVideoLayer: React.FC<Props> = ({
 
     const tMs = video.currentTime * 1000;
     const seg = segments.find((s) => tMs >= s.startMs && tMs <= s.endMs) ?? null;
-    // Worker chấm điểm homography trên từng frame của pha và trả validWindows:
-    // khi camera cắt cận cảnh VĐV, sân không còn trên khung — ẩn overlay sân
-    // thay vì vẽ trôi nổi. Trail/chân VĐV vẫn vẽ vì đó là detection theo frame.
-    // Worker chấm điểm homography trên từng frame của pha và trả validWindows:
-    // khi camera cắt cận cảnh VĐV, sân không còn trên khung — ẩn overlay sân.
-    // Áp dụng độ mờ mềm mại (fade-in / fade-out trong 300ms) để không bị giật nhấp nháy.
+
+    // Fade-in / fade-out court overlay
     let courtAlpha = 0;
     if (showCourt && seg?.lines) {
       if (!seg.validWindows?.length) {
@@ -161,10 +168,7 @@ export const ArVideoLayer: React.FC<Props> = ({
       }
     }
 
-    // Canvas cố định 1280×720 bị CSS kéo giãn theo khung, còn <video> dùng
-    // object-contain (letterbox khi tỉ lệ khung ≠ 16:9). Phải tính đúng hình
-    // chữ nhật mà video đang chiếm chỗ, nếu không overlay sẽ lệch/sai tỉ lệ
-    // so với sân thật trong video (lệch sân khi video 4:3 hoặc dọc).
+    // Tỉ lệ letterbox của video
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     let dx = 0;
@@ -181,10 +185,7 @@ export const ArVideoLayer: React.FC<Props> = ({
     const px = (u: number) => dx + u * dw;
     const py = (v: number) => dy + v * dh;
 
-    // 1) Đường sân — mỗi group là danh sách polyline và MỘT polyline có thể có
-    // nhiều hơn 2 điểm (vd "outline" là quad 4 góc sân khép kín 5 điểm).
-    // Phải nối tất cả các đỉnh liên tiếp, không chỉ 2 điểm đầu — trước đây
-    // khung 4 góc sân chỉ vẽ được duy nhất cạnh trên.
+    // 1) Đường sân quang học AR
     if (showCourt && seg?.lines && courtAlpha > 0.02) {
       ctx.save();
       ctx.globalAlpha = courtAlpha;
@@ -216,7 +217,7 @@ export const ArVideoLayer: React.FC<Props> = ({
       ctx.restore();
     }
 
-    // 2) Chân & Bounding Box 2 VĐV (sample gần nhất ≤ tMs, cửa sổ 0.5s)
+    // 2) Chân & Bounding Box 2 VĐV
     if (showPlayers && playerSamples.length > 0) {
       let sample = null as (typeof playerSamples)[number] | null;
       for (let i = playerSamples.length - 1; i >= 0; i--) {
@@ -285,29 +286,141 @@ export const ArVideoLayer: React.FC<Props> = ({
       }
     }
 
-    // 3) Quỹ đạo bóng 0.9s gần nhất
-    if (showTrail) {
+    // 3) Điểm nảy sân (Hawkeye Bounces với ripple lan tỏa)
+    if (showBounces && bounces.length > 0) {
+      for (const b of bounces) {
+        // Hiển thị điểm nảy trong 2.5s sau khi nảy (hoặc toàn bộ nếu showFullTrajectory)
+        const isRecent = tMs >= b.t && tMs - b.t <= 2500;
+        const isHistory = showFullTrajectory && tMs >= b.t;
+
+        if (isRecent || isHistory) {
+          const bx = px(b.u);
+          const by = py(b.v);
+          const age = Math.min(1, Math.max(0, (tMs - b.t) / 2500));
+          const rippleAlpha = isRecent ? Math.max(0.15, 1 - age) : 0.35;
+          const rippleRadius = isRecent ? 8 + age * 20 : 10;
+
+          ctx.save();
+          // Tâm điểm nảy
+          ctx.fillStyle = '#caf300';
+          ctx.beginPath();
+          ctx.arc(bx, by, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Vòng sóng ripple
+          ctx.strokeStyle = `rgba(202, 243, 0, ${rippleAlpha.toFixed(2)})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(bx, by, rippleRadius, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Nhãn BOUNCE
+          if (isRecent) {
+            ctx.font = 'bold 9px ui-monospace, monospace';
+            ctx.fillStyle = `rgba(202, 243, 0, ${rippleAlpha.toFixed(2)})`;
+            ctx.fillText('● BOUNCE', bx - 20, by - rippleRadius - 3);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
+    // 4) Điểm tiếp xúc vợt (Shots)
+    if (shots.length > 0) {
+      for (const s of shots) {
+        if (tMs >= s.t && tMs - s.t <= 1200) {
+          const sx = px(s.u);
+          const sy = py(s.v);
+          const age = (tMs - s.t) / 1200;
+          const alpha = Math.max(0.2, 1 - age);
+
+          ctx.save();
+          ctx.fillStyle = `rgba(76, 215, 246, ${alpha.toFixed(2)})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.font = 'bold 9px ui-monospace, monospace';
+          ctx.fillStyle = `rgba(76, 215, 246, ${alpha.toFixed(2)})`;
+          ctx.fillText('⚡ HIT', sx - 12, sy - 8);
+          ctx.restore();
+        }
+      }
+    }
+
+    // 5) Quỹ đạo bóng AR
+    if (showTrail && trail.length > 0) {
+      // 5a. Toàn bộ đường bay lịch sử của pha (khi bật showFullTrajectory)
+      if (showFullTrajectory) {
+        const past = trail.filter((p) => p.t <= tMs);
+        if (past.length > 1) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(76, 215, 246, 0.4)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(px(past[0].u), py(past[0].v));
+          for (let i = 1; i < past.length; i++) {
+            ctx.lineTo(px(past[i].u), py(past[i].v));
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      // 5b. Đuôi quỹ đạo thực tế 1.0s gần nhất (luminous neon arc)
       const recent = trail.filter((p) => p.t <= tMs && tMs - p.t <= TRAIL_WINDOW_MS);
       if (recent.length > 1) {
+        ctx.save();
         for (let i = 1; i < recent.length; i++) {
           const p0 = recent[i - 1];
           const p1 = recent[i];
           const alpha = 1 - (tMs - p1.t) / TRAIL_WINDOW_MS;
-          ctx.strokeStyle = `rgba(244, 114, 182, ${Math.max(0.15, alpha).toFixed(2)})`;
-          ctx.lineWidth = 2.5;
+          // Gradient từ hồng cánh sen đến vàng chanh neon
+          ctx.strokeStyle = `rgba(202, 243, 0, ${Math.max(0.2, alpha).toFixed(2)})`;
+          ctx.lineWidth = 2.5 + alpha * 1.5;
           ctx.beginPath();
           ctx.moveTo(px(p0.u), py(p0.v));
           ctx.lineTo(px(p1.u), py(p1.v));
           ctx.stroke();
         }
+
+        // Đầu quả bóng hiện tại đang bay: quả cầu phát sáng
         const last = recent[recent.length - 1];
-        ctx.fillStyle = '#f472b6';
+        const lx = px(last.u);
+        const ly = py(last.v);
+
+        // Glow tỏa sáng
+        ctx.shadowColor = '#caf300';
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = '#caf300';
         ctx.beginPath();
-        ctx.arc(px(last.u), py(last.v), 6, 0, Math.PI * 2);
+        ctx.arc(lx, ly, 6, 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Vòng viền trắng tăng độ tương phản
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
     }
-  }, [arData, segments, showCourt, showTrail, showPlayers, showKitchen, trail, playerSamples]);
+  }, [
+    arData,
+    segments,
+    showCourt,
+    showTrail,
+    showPlayers,
+    showKitchen,
+    showBounces,
+    showFullTrajectory,
+    trail,
+    shots,
+    bounces,
+    playerSamples,
+  ]);
 
   useEffect(() => {
     const loop = () => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Play,
   Pause,
@@ -29,9 +29,26 @@ interface HighlightItem {
   hasAr?: boolean;
 }
 
-export const VideoHudPlayer: React.FC = () => {
+interface VideoHudPlayerProps {
+  selectedRally?: RallyTelemetry;
+  onSelectRally?: (rally: RallyTelemetry) => void;
+}
+
+export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
+  selectedRally,
+  onSelectRally,
+}) => {
   const { runId, runs, rallies: RALLIES_DATA } = useTelemetry();
-  const videoUrl = runId ? `/internal/v1/test/runs/${runId}/video` : '';
+  const [selectedRallyIndex, setSelectedRallyIndex] = useState<number | null>(null);
+
+  const videoUrl = useMemo(() => {
+    if (!runId) return '';
+    if (selectedRallyIndex !== null) {
+      return `/internal/v1/test/runs/${runId}/video?rally=${selectedRallyIndex}`;
+    }
+    return `/internal/v1/test/runs/${runId}/video`;
+  }, [runId, selectedRallyIndex]);
+
   // Trạng thái video của run đang chọn: server có file gốc không, và video có
   // khớp nguồn không (run cũ chỉ còn JSON có thể phát nhầm video khác).
   const currentRun = runs.find((r) => r.runId === runId);
@@ -45,10 +62,12 @@ export const VideoHudPlayer: React.FC = () => {
   const [selectedHighlightId, setSelectedHighlightId] = useState<string>('13');
   const [filter, setFilter] = useState<'all' | 'high_speed' | 'long' | 'decisive'>('all');
 
-  // AR Overlay Filters toggles (mặc định tắt, người dùng bấm mới bật)
+  // AR Overlay Filters toggles (mặc định BẬT để vẽ ngay đường bóng, sân AR, khung VĐV)
   const [showTrajectory, setShowTrajectory] = useState<boolean>(false);
   const [showBoundingBoxes, setShowBoundingBoxes] = useState<boolean>(false);
   const [showKitchenZone, setShowKitchenZone] = useState<boolean>(false);
+  const [showBounces, setShowBounces] = useState<boolean>(true);
+  const [showFullTrajectory, setShowFullTrajectory] = useState<boolean>(false);
 
   // Time scrubber state
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
@@ -173,6 +192,16 @@ export const VideoHudPlayer: React.FC = () => {
     }
   }, []);
 
+  // Khi chọn rally từ bên ngoài (RalliesTable), tự động seek tới mốc thời gian đó trên video toàn trận
+  useEffect(() => {
+    if (selectedRally?.startMs != null) {
+      if (selectedRallyIndex !== null) {
+        setSelectedRallyIndex(null);
+      }
+      seekTo(selectedRally.startMs / 1000);
+    }
+  }, [selectedRally, seekTo]);
+
 
   return (
     <div className="bg-[#0e1320] border border-white/10 rounded-xl p-4 lg:p-6 shadow-2xl relative">
@@ -187,12 +216,58 @@ export const VideoHudPlayer: React.FC = () => {
               <h2 className="text-white text-base lg:text-lg font-bold tracking-tight">
                 Trình Phát Video Phân Tích & AR Telemetry HUD
               </h2>
-              
             </div>
-            
+            <p className="text-xs text-[#8f9bb3] mt-0.5 font-mono">
+              {selectedRallyIndex === null
+                ? '🎬 Đang phát: Toàn bộ video trận đấu (Full Match Timeline)'
+                : `⚡ Đang xem chi tiết: Pha bóng #${selectedRallyIndex} (AI Telemetry Overlay)`}
+            </p>
           </div>
         </div>
 
+        {/* Rally / Full Match Mode Selector */}
+        <div className="flex items-center gap-1.5 bg-[#080d19] p-1 rounded-lg border border-white/10 flex-wrap shrink-0">
+          <button
+            onClick={() => {
+              setSelectedRallyIndex(null);
+              if (RALLIES_DATA.length > 0) onSelectRally?.(RALLIES_DATA[0]);
+              seekTo(0);
+            }}
+            className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all flex items-center gap-1.5 ${
+              selectedRallyIndex === null
+                ? 'bg-[#caf300] text-black font-bold shadow-[0_0_12px_rgba(202,243,0,0.3)]'
+                : 'text-[#8f9bb3] hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span>🎬 Toàn Trận</span>
+            {videoDuration > 0 && selectedRallyIndex === null && (
+              <span className="text-[10px] opacity-80">({videoDuration.toFixed(0)}s)</span>
+            )}
+          </button>
+
+          {RALLIES_DATA.map((r, idx) => {
+            const rNum = idx + 1;
+            const isSelected = selectedRallyIndex === rNum;
+            return (
+              <button
+                key={r.id || idx}
+                onClick={() => {
+                  setSelectedRallyIndex(rNum);
+                  onSelectRally?.(r);
+                  seekTo(0);
+                }}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-mono transition-all flex items-center gap-1 ${
+                  isSelected
+                    ? 'bg-[#4cd7f6] text-black font-bold shadow-[0_0_12px_rgba(76,215,246,0.35)]'
+                    : 'text-[#8f9bb3] hover:text-white bg-white/5 hover:bg-white/10'
+                }`}
+              >
+                <span>Pha {rNum}</span>
+                <span className="text-[10px] opacity-75">({r.durationSeconds.toFixed(1)}s)</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Main Grid: Player on Left (7 cols) + Highlights on Right (5 cols) */}
@@ -227,11 +302,14 @@ export const VideoHudPlayer: React.FC = () => {
             ) : (
               <ArVideoLayer
                 videoUrl={videoUrl}
+                rallyId={selectedRallyIndex ?? undefined}
                 videoRef={videoRef}
                 showTrail={showTrajectory}
                 showPlayers={showBoundingBoxes}
                 showCourt={showKitchenZone}
                 showKitchen={showKitchenZone}
+                showBounces={showBounces}
+                showFullTrajectory={showFullTrajectory}
                 onError={() => setVideoError(true)}
               />
             )}
@@ -374,6 +452,28 @@ export const VideoHudPlayer: React.FC = () => {
                   Quỹ Đạo Bóng
                 </button>
                 <button
+                  onClick={() => setShowBounces(!showBounces)}
+                  className={`px-2.5 py-1 text-[11px] font-mono rounded border transition-all ${
+                    showBounces
+                      ? 'bg-[#caf300]/20 border-[#caf300] text-[#caf300] font-bold shadow-[0_0_8px_rgba(202,243,0,0.2)]'
+                      : 'bg-white/5 border-white/10 text-[#64748b] opacity-60 hover:opacity-100'
+                  }`}
+                  title={showBounces ? 'Ẩn điểm nảy tiếp đất' : 'Hiện điểm nảy tiếp đất (Bounces)'}
+                >
+                  Điểm Nảy Sân
+                </button>
+                <button
+                  onClick={() => setShowFullTrajectory(!showFullTrajectory)}
+                  className={`px-2.5 py-1 text-[11px] font-mono rounded border transition-all ${
+                    showFullTrajectory
+                      ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6] font-bold shadow-[0_0_8px_rgba(76,215,246,0.2)]'
+                      : 'bg-white/5 border-white/10 text-[#64748b] opacity-60 hover:opacity-100'
+                  }`}
+                  title={showFullTrajectory ? 'Chuyển về đuôi bóng 1.0s' : 'Hiện toàn bộ đường bóng của pha'}
+                >
+                  Toàn Bộ Đường Bay
+                </button>
+                <button
                   onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
                   className={`px-2.5 py-1 text-[11px] font-mono rounded border transition-all ${
                     showBoundingBoxes
@@ -393,7 +493,7 @@ export const VideoHudPlayer: React.FC = () => {
                   }`}
                   title={showKitchenZone ? 'Ẩn khung phát bóng & vạch sân' : 'Hiện khung phát bóng & vạch sân'}
                 >
-                  Khung phát bóng
+                  Khung Sân AR
                 </button>
               </div>
 
@@ -474,7 +574,10 @@ export const VideoHudPlayer: React.FC = () => {
                   key={item.id}
                   onClick={() => {
                     setSelectedHighlightId(item.id);
-                    // Seek thật tới mốc bắt đầu rally trong video
+                    if (selectedRallyIndex !== null) {
+                      setSelectedRallyIndex(null);
+                    }
+                    // Seek thật tới mốc bắt đầu rally trong video toàn trận
                     seekTo(item.startMs / 1000);
                     videoRef.current?.play();
                     setIsPlaying(true);

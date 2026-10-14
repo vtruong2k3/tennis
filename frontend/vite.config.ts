@@ -8,7 +8,7 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname ?? '.', '.'),
       },
     },
     server: {
@@ -18,10 +18,10 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
-      // Proxy API tennis-engine (chạy ở container port 4200) để tránh CORS.
+      // Proxy API tennis-engine (chạy ở port 5200) để tránh CORS.
       proxy: {
         '/internal': {
-          target: process.env.TENNIS_ENGINE_URL || 'http://localhost:4200',
+          target: process.env.TENNIS_ENGINE_URL || 'http://localhost:5200',
           changeOrigin: true,
         },
       },

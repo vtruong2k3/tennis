@@ -47,14 +47,22 @@ def to_browser_playable(source: str | Path, crf: int = 23) -> Path | None:
         logger.warning(f"Cannot transcode: {source} does not exist")
         return None
 
-    if shutil.which("ffmpeg") is None:
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            pass
+
+    if ffmpeg_bin is None:
         logger.warning("ffmpeg not found on PATH - the 3-D viewer's video tab will be "
                        "empty, because browsers cannot play the AVI the pipeline writes")
         return None
 
     target = source.with_suffix(".mp4")
     result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        [str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
          "-i", str(source),
          "-c:v", "libx264", "-preset", "fast", "-crf", str(crf),
          "-pix_fmt", "yuv420p",          # required for broad browser compatibility

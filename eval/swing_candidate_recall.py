@@ -111,7 +111,7 @@ def main():
     interpolated = ball_tracker.interpolate_ball_positions(
         ball_tracker.detect_frames(frames)
     )
-    player_tracker = PlayerTracker(model_path="yolov8x")
+    player_tracker = PlayerTracker(model_path="yolo11x")
     players = player_tracker.detect_frames(
         frames, read_from_stub=True,
         stub_path=stub_path_for_video("tracker_stubs/player_detections.pkl", args.video),

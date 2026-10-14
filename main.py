@@ -150,7 +150,7 @@ _DEFAULTS: dict = {
         "use_sam3d_pose": False,
     },
     "models": {
-        "player": "yolov8x",
+        "player": "yolo11x",
         "ball": "models/last.pt",
         # The geometrically fine-tuned weights, which is what scripts/download_models.py
         # fetches. models/keypoints_model.pth is the superseded original.
@@ -520,7 +520,8 @@ def main():
     # ── 1. Load video ──────────────────────────────────────────────
     logger.info("[1/9] Loading video frames...")
     input_path = cfg["io"]["input_video"]
-    video_frames = read_video(input_path)
+    max_f = args.max_frames if (args.max_frames and args.max_frames > 0) else None
+    video_frames = read_video(input_path, max_frames=max_f)
     if not video_frames:
         logger.error(f"No frames could be read from {input_path}. The file may be "
                      f"missing, empty, or in a codec OpenCV cannot decode.")
@@ -533,7 +534,7 @@ def main():
     # tools/label_shots.py did not, so the labelling tool could seed ground truth from
     # 40 frames of a 570-frame video. The end-to-end smoke test runs exactly this way,
     # so running the test suite was enough to trigger it.
-    truncated = bool(args.max_frames and args.max_frames < len(video_frames))
+    truncated = bool(args.max_frames)
     if truncated:
         logger.info(f"  Limiting to first {args.max_frames} frames (--max-frames). "
                     f"Detections from this run will NOT be cached, because they do not "
@@ -854,6 +855,7 @@ def main():
             ball_shot_frames, ball_detections, player_detections, player_mini_court,
             far_baseline_y=court_kp[1], near_baseline_y=court_kp[5],
             fps=fps,
+            single_rally=True,
         )
         logger.info(f"  Serve detection: {len(serve_frames)} of {len(ball_shot_frames)} "
                     f"contacts carry serve evidence {serve_frames if serve_frames else ''}")
@@ -1055,6 +1057,20 @@ def main():
                 )
             else:
                 logger.info("  Pose model unavailable - keeping position-based labels")
+
+        # Resolve any remaining Groundstroke labels into Forehand / Backhand using relative X geometry
+        net_y = mini_court.court_drawing_height * 0.5
+        for f, info in shot_classifications.items():
+            if info.get("shot_type") == "Groundstroke":
+                pid = info.get("player_id")
+                p_pos = player_mini_court.get(f, {}).get(pid)
+                b_pos = ball_mini_court.get(f, {}).get(1)
+                if p_pos and b_pos:
+                    dx = b_pos[0] - p_pos[0]
+                    if p_pos[1] > net_y:
+                        info["shot_type"] = "Forehand" if dx >= 0 else "Backhand"
+                    else:
+                        info["shot_type"] = "Forehand" if dx <= 0 else "Backhand"
 
         types = [v["shot_type"] for v in shot_classifications.values()]
         logger.info(f"  {len(shot_classifications)} shots classified: {types}")
@@ -1562,7 +1578,7 @@ def main():
 
     # ── 9. Render output video ─────────────────────────────────────
     logger.info("[9/9] Rendering output video...")
-    output_frames = video_frames.copy()
+    output_frames = video_frames
 
     logger.debug("  Filtering player detections by confidence...")
     player_detections = player_tracker.filter_by_confidence(
@@ -1698,12 +1714,13 @@ def main():
 
     web_video_path = None
     if "web_video" in locals() and web_video:
-        web_video_path = web_video.name if hasattr(web_video, "name") else str(web_video)
+        web_video_path = str(web_video)
     elif os.path.exists(output_path):
         web_video_obj = to_browser_playable(output_path)
         if web_video_obj:
-            web_video_path = web_video_obj.name if hasattr(web_video_obj, "name") else str(web_video_obj)
+            web_video_path = str(web_video_obj)
 
+    hitter_by_frame = {f: info.get("player_id") for f, info in shot_classifications.items()}
     logger.info("Exporting React frontend telemetry artifacts...")
     try:
         export_frontend_artifacts(
@@ -1719,7 +1736,7 @@ def main():
             ball_shot_frames=ball_shot_frames,
             bounce_frames=bounce_frames,
             shot_classifications=shot_classifications,
-            hitter_by_frame=hitter_by_frame if "hitter_by_frame" in locals() else None,
+            hitter_by_frame=hitter_by_frame,
             trajectories_3d=trajectories_3d,
             video_mp4_path=web_video_path,
             fps=fps,

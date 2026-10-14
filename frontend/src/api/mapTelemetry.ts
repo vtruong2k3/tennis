@@ -126,7 +126,9 @@ export function mapTelemetry(result: EngineResult, runId: string): MappedTelemet
       distanceM: p.distanceM != null ? round1(p.distanceM) : undefined,
       leftSidePct: p.leftSidePct != null ? round1(p.leftSidePct) : undefined,
       dominantShotLabel: labelOf(dominant),
+      shotTypes: p.shotTypes ?? {},
       breakdown: entries.map(([type, count]) => ({
+        type,
         name: `${labelOf(type)} (${count} cú)`,
         shots: count,
         percentage: round1((count / shotTotal) * 100),

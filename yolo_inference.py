@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model = YOLO('yolov8x')  # Load model
+model = YOLO('yolo11x')  # Load model
 
 
 # # Load a model

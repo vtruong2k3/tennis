@@ -122,3 +122,19 @@ def test_missing_mini_court_position_refuses_rather_than_guesses():
 def test_separation_constant_is_physically_sensible():
     """A guard on the constant itself: seconds, and long enough to mean a new point."""
     assert 1.0 <= MIN_SERVE_SEPARATION_S <= 10.0
+
+
+def test_single_rally_keeps_only_opening_serve():
+    """In a single rally, only the opening shot can be a serve even if mid-rally shots look like serves."""
+    ball, players, mini = _scene(400, [30, 150, 280])
+    found = detect_serve_frames([30, 150, 280], ball, players, mini, FAR_Y, NEAR_Y, fps=30.0, single_rally=True)
+    assert found == [30], f"expected only opening serve [30], got {found}"
+
+
+def test_single_rally_started_mid_point_yields_no_serve():
+    """If the rally started mid-point (first shot not a serve), 0 serves are returned."""
+    ball, players, mini = _scene(400, [30, 150], ball_high=False)
+    # Give frame 150 high ball, but frame 30 low ball
+    ball[150] = {1: [425.0, 200.0, 435.0, 210.0]}
+    found = detect_serve_frames([30, 150], ball, players, mini, FAR_Y, NEAR_Y, fps=30.0, single_rally=True)
+    assert found == [], f"expected no serve for mid-point start, got {found}"

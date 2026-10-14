@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { RallyTelemetry } from '../types/telemetry';
-import { Play, Pause, RotateCcw } from 'lucide-react';
+import { Play, Pause, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTelemetry } from '../api/TelemetryContext';
 import { useArData, fetchHeatmap, HeatmapData } from '../api/useArData';
 import { CourtRealSvg } from './CourtRealSvg';
+import { Court3DCanvas } from './Court3DCanvas';
+import { buildRally3DTrajectory } from '../api/court3DMap';
 import { computePlayerMetrics, hottestCell } from '../api/courtMap';
 
 interface CourtTrackingProps {
   selectedRally: RallyTelemetry;
+  onSelectRally?: (rally: RallyTelemetry) => void;
 }
 
-export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally }) => {
+export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onSelectRally }) => {
   const { runId, rallies } = useTelemetry();
   const ar = useArData(runId);
   const [heat, setHeat] = React.useState<HeatmapData | null>(null);
@@ -50,6 +53,11 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally }) =
   const [viewMode, setViewMode] = useState<'2d' | '3d' | 'trajectory'>('2d');
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [ballProgress, setBallProgress] = useState<number>(1);
+
+  // Dựng dữ liệu 3D thực tế từ telemetry
+  const trajectory3D = useMemo(() => {
+    return buildRally3DTrajectory(ar, selectedRally, rallyIndex);
+  }, [ar, selectedRally, rallyIndex]);
 
   // Ball flight animation
   useEffect(() => {
@@ -117,38 +125,84 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally }) =
           </p>
         </div>
 
-        {/* View Switchers */}
-        <div className="flex items-center gap-1 bg-[#0a0f1d] p-1 rounded border border-white/10 shrink-0">
-          <button
-            onClick={() => setViewMode('2d')}
-            className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-              viewMode === '2d'
-                ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
-                : 'text-[#94a3b8] hover:text-white'
-            }`}
-          >
-            Tactical 2D
-          </button>
-          <button
-            onClick={() => setViewMode('3d')}
-            className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-              viewMode === '3d'
-                ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
-                : 'text-[#94a3b8] hover:text-white'
-            }`}
-          >
-            AR 3D Cam
-          </button>
-          <button
-            onClick={() => setViewMode('trajectory')}
-            className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
-              viewMode === 'trajectory'
-                ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
-                : 'text-[#94a3b8] hover:text-white'
-            }`}
-          >
-            Quỹ Đạo Bay
-          </button>
+        {/* Header Actions: Quick Rally Picker & View Switchers */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Quick Rally Picker in Header */}
+          {rallies.length > 0 && (
+            <div className="flex items-center gap-1 bg-[#0a0f1d] px-2 py-1 rounded-lg border border-white/10 text-xs font-mono">
+              <span className="text-[#8f9bb3] text-[10px]">Pha:</span>
+              <button
+                onClick={() => {
+                  const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                  const prevIdx = curIdx > 0 ? curIdx - 1 : rallies.length - 1;
+                  onSelectRally?.(rallies[prevIdx]);
+                }}
+                className="p-1 hover:bg-white/10 rounded text-white"
+                title="Pha trước"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <select
+                value={selectedRally.id}
+                onChange={(e) => {
+                  const target = rallies.find((r) => r.id === e.target.value);
+                  if (target) onSelectRally?.(target);
+                }}
+                className="bg-transparent border-none text-[#caf300] font-bold text-xs focus:outline-none cursor-pointer"
+              >
+                {rallies.map((r, idx) => (
+                  <option key={r.id} value={r.id} className="bg-[#111624] text-white">
+                    #{String(idx + 1).padStart(2, '0')} — {r.maxSpeed} km/h ({r.shotsCount} chạm)
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                  const nextIdx = curIdx < rallies.length - 1 ? curIdx + 1 : 0;
+                  onSelectRally?.(rallies[nextIdx]);
+                }}
+                className="p-1 hover:bg-white/10 rounded text-white"
+                title="Pha tiếp theo"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* View Switchers */}
+          <div className="flex items-center gap-1 bg-[#0a0f1d] p-1 rounded border border-white/10 shrink-0">
+            <button
+              onClick={() => setViewMode('2d')}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                viewMode === '2d'
+                  ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
+                  : 'text-[#94a3b8] hover:text-white'
+              }`}
+            >
+              Tactical 2D
+            </button>
+            <button
+              onClick={() => setViewMode('3d')}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                viewMode === '3d'
+                  ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
+                  : 'text-[#94a3b8] hover:text-white'
+              }`}
+            >
+              AR 3D Cam
+            </button>
+            <button
+              onClick={() => setViewMode('trajectory')}
+              className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                viewMode === 'trajectory'
+                  ? 'bg-[#4cd7f6] text-[#0a0e18] shadow-[0_0_10px_rgba(76,215,246,0.3)]'
+                  : 'text-[#94a3b8] hover:text-white'
+              }`}
+            >
+              Quỹ Đạo Bay
+            </button>
+          </div>
         </div>
       </div>
 
@@ -180,13 +234,52 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally }) =
           >
             <RotateCcw className="w-3 h-3" />
           </button>
+          {rallies.length > 0 && (
+            <button
+              onClick={() => {
+                const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                const prevIdx = curIdx > 0 ? curIdx - 1 : rallies.length - 1;
+                onSelectRally?.(rallies[prevIdx]);
+              }}
+              className="text-[#8f9bb3] hover:text-white p-0.5"
+              title="Pha trước"
+            >
+              <ChevronLeft className="w-3 h-3" />
+            </button>
+          )}
           <span className="text-[#caf300] font-bold">RALLY {selectedRally.id}</span>
+          {rallies.length > 0 && (
+            <button
+              onClick={() => {
+                const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                const nextIdx = curIdx < rallies.length - 1 ? curIdx + 1 : 0;
+                onSelectRally?.(rallies[nextIdx]);
+              }}
+              className="text-[#8f9bb3] hover:text-white p-0.5"
+              title="Pha tiếp"
+            >
+              <ChevronRight className="w-3 h-3" />
+            </button>
+          )}
           <span className="text-white/40">|</span>
           <span>{selectedRally.maxSpeed} KM/H</span>
         </div>
 
-        {/* Court Canvas / SVG — dữ liệu thật từ engine khi có, mock khi không có */}
-        {hasReal && ar ? (
+        {/* Court Canvas: 3D Three.js khi chọn 3D, hoặc 2D SVG khi chọn Tactical / Trajectory */}
+        {viewMode === '3d' ? (
+          <div className="w-full h-full min-h-[260px] relative">
+            <Court3DCanvas
+              points3D={trajectory3D.points}
+              bounces3D={trajectory3D.bounces}
+              cameraAngle="isometric"
+              showHeatmap={true}
+              showTrail={true}
+              showShadow={true}
+              progress={ballProgress}
+              heatmapData={heat}
+            />
+          </div>
+        ) : hasReal && ar ? (
           <CourtRealSvg
             ar={ar}
             heat={heat}

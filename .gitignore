@@ -12,6 +12,7 @@ models/*.pt
 models/*.pth
 models/*.task
 yolov8x.pt
+yolo11x.pt
 
 # Python cache
 __pycache__/

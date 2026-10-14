@@ -87,6 +87,8 @@ class ShotClassifier:
             # Extract player and ball positions
             player_pos = player_positions[player_shot_id]
             player_y = player_pos[1]
+            player_x = player_pos[0]
+            ball_x = ball_pos[0]
             
             # Get ball trajectory. Unavailable for the final shot (no successor to
             # measure against), which is a real absence rather than a zero measurement.
@@ -106,7 +108,9 @@ class ShotClassifier:
                 player_y=player_y,
                 ball_trajectory_y=ball_trajectory_y,
                 mini_court_height=mini_court_height,
-                is_first_shot=(shot_frame in serve_frames)
+                is_first_shot=(shot_frame in serve_frames),
+                player_x=player_x,
+                ball_x=ball_x,
             )
             
             # Store classification
@@ -118,9 +122,10 @@ class ShotClassifier:
             
         return shot_classifications
     
-    def _determine_shot_type(self, i, player_id, player_y, ball_trajectory_y, mini_court_height, is_first_shot):
+    def _determine_shot_type(self, i, player_id, player_y, ball_trajectory_y, mini_court_height, is_first_shot,
+                             player_x=None, ball_x=None):
         """
-        Determine the type of shot based on player position and ball trajectory.
+        Determine the type of shot based on player position, ball position, and trajectory.
         
         Args:
             i: Shot index
@@ -128,7 +133,9 @@ class ShotClassifier:
             player_y: Y-coordinate of player on mini court
             ball_trajectory_y: Vertical component of ball trajectory
             mini_court_height: Height of mini court for relative positioning
-            is_first_shot: Whether this is the first shot in a rally
+            is_first_shot: Whether this is the first shot in a rally carrying serve evidence
+            player_x: X-coordinate of player on mini court
+            ball_x: X-coordinate of ball on mini court
             
         Returns:
             Shot type classification
@@ -137,11 +144,8 @@ class ShotClassifier:
         net_y = mini_court_height * self.NET_Y_POSITION_RELATIVE
         default_shot = self.SHOT_TYPES['FOREHAND']
 
-        # `is_first_shot` now means "carries serve evidence" (ball struck above the
-        # player's head, from a baseline) rather than "happens to be first in the
-        # clip". The old positional rule labelled a mid-rally groundstroke a serve
-        # whenever a clip started mid-point, which is most of the time - see
-        # utils/serve_detector.py.
+        # `is_first_shot` means carries serve evidence (ball struck above the player's
+        # head from a baseline at the opening of a rally).
         if is_first_shot:
             return self.SHOT_TYPES['SERVE']
         
@@ -154,7 +158,17 @@ class ShotClassifier:
         if ball_trajectory_y > 0 and ball_trajectory_y > mini_court_height * self.SMASH_HEIGHT_THRESHOLD:
             return self.SHOT_TYPES['SMASH']
         
-        # Determine forehand/backhand based on player position and ball trajectory
+        # Determine forehand/backhand based on lateral relation (ball on hitter's left vs right side)
+        if player_x is not None and ball_x is not None:
+            dx = ball_x - player_x
+            if player_y > net_y:
+                # Bottom player (faces upward towards net): right side of image is player's right
+                return self.SHOT_TYPES['FOREHAND'] if dx >= 0 else self.SHOT_TYPES['BACKHAND']
+            else:
+                # Top player (faces downward towards net): left side of image is player's right
+                return self.SHOT_TYPES['FOREHAND'] if dx <= 0 else self.SHOT_TYPES['BACKHAND']
+
+        # Fallback when X coordinates are unavailable
         # For player 1 (usually bottom of court)
         if player_id == 1:
             if player_y > net_y and ball_trajectory_y < 0:

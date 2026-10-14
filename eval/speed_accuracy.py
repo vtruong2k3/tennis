@@ -57,7 +57,7 @@ def evaluate(video_path: str) -> dict:
 
     # Run detection the way the pipeline does: TrackNet ball (from stub) + player stub.
     print("Running detection pipeline (may take a moment)...")
-    player_tracker = PlayerTracker(model_path="yolov8x")
+    player_tracker = PlayerTracker(model_path="yolo11x")
 
     player_dets = player_tracker.detect_frames(
         frames,

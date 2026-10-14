@@ -259,7 +259,7 @@ def test_no_mkdir_forgets_its_parents():
     bad = "mkdir(" + "exist_ok=True)"
     offenders = []
     for path in REPO.rglob("*.py"):
-        if any(part in {"venv", ".git", "build", "dist"} for part in path.parts):
+        if any(part in {"venv", ".venv", ".git", "build", "dist"} for part in path.parts):
             continue
         if path.name == "test_packaging.py":
             continue

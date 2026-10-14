@@ -165,28 +165,40 @@ def detect_serve_frames(
     far_baseline_y: float,
     near_baseline_y: float,
     fps: float = 30.0,
+    single_rally: bool = False,
 ) -> list[int]:
     """
     Subset of `contact_frames` that carry serve evidence, in order.
 
-    Serves closer together than MIN_SERVE_SEPARATION_S are collapsed to one. A point
-    cannot start twice inside a second: even a fault and second serve are separated by
-    the time to retrieve a ball and reset. Measured on the eval suite, one clip reported
-    serves 18 frames apart, 0.6s, which is physically impossible and was the ball being
-    high above the player across a short window rather than two separate deliveries.
+    In `single_rally=True` mode, at most ONE serve can exist, and it MUST be the opening
+    shot of the rally. Mid-rally shots (returns, groundstrokes, smashes) cannot be serves
+    under the rules of tennis.
 
-    When candidates cluster, the one with the ball highest above the hitter's head is
-    kept. A serve's contact is the highest point of the toss, so the peak of a cluster is
-    the delivery and its neighbours are the frames either side of it.
-
-    `fps` matters because the separation is a duration, not a frame count: 18 frames is
-    0.6s at 30fps and 0.3s at 60fps, and only one of those readings is about tennis.
+    When `single_rally=False`, serves closer together than MIN_SERVE_SEPARATION_S are
+    collapsed to one via temporal clustering across the full match video.
     """
     candidates = [
         frame for frame in sorted(contact_frames)
         if is_serve(frame, ball_detections, player_detections, player_mini_court,
                     far_baseline_y, near_baseline_y)
     ]
+    if not candidates:
+        return []
+
+    if single_rally:
+        if not contact_frames:
+            return []
+        first_contact = sorted(contact_frames)[0]
+        # In a single rally, only the opening shot can be a serve
+        opening_window = max(1, int(round(0.75 * max(fps, 1.0))))
+        opening_candidates = [
+            f for f in candidates
+            if abs(f - first_contact) <= opening_window
+        ]
+        if not opening_candidates:
+            return []
+        return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections))]
+
     if len(candidates) < 2:
         return candidates
 

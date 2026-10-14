@@ -8,7 +8,7 @@ export interface EngineRun {
   videoVerified?: boolean;
 }
 
-// Cùng origin — Vite proxy '/internal' về tennis-engine (mặc định localhost:4200).
+// Cùng origin — Vite proxy '/internal' về tennis-engine (mặc định localhost:5200).
 export async function listRuns(): Promise<EngineRun[]> {
   const res = await fetch('/internal/v1/test/runs');
   if (!res.ok) throw new Error(`listRuns: HTTP ${res.status}`);
@@ -100,8 +100,11 @@ export interface ArData {
   players: { samples?: ArPlayerSample[]; playerCount?: number };
 }
 
-export async function fetchArData(runId: string): Promise<ArData> {
-  const res = await fetch(`/internal/v1/test/runs/${encodeURIComponent(runId)}/ar-data`);
+export async function fetchArData(runId: string, rallyId?: number): Promise<ArData> {
+  const url = rallyId != null
+    ? `/internal/v1/test/runs/${encodeURIComponent(runId)}/ar-data?rally=${rallyId}`
+    : `/internal/v1/test/runs/${encodeURIComponent(runId)}/ar-data`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Không tải được dữ liệu AR (HTTP ${res.status})`);
   return (await res.json()) as ArData;
 }

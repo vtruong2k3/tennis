@@ -112,6 +112,25 @@ class MiniCourt:
         self._set_court_position()
         self._set_drawing_keypoints()
         self._set_court_lines()
+        self._precompute_surface_cache()
+
+    def _precompute_surface_cache(self) -> None:
+        """Precomputes the mini-court surface fill and mask on ROI to avoid per-frame allocations."""
+        roi_h = max(1, self.end_y - self.start_y)
+        roi_w = max(1, self.end_x - self.start_x)
+        self._cached_roi_surface = np.zeros((roi_h, roi_w, 3), dtype=np.uint8)
+        kp = self.drawing_key_points
+        corners = np.array(
+            [
+                [kp[0] - self.start_x, kp[1] - self.start_y],
+                [kp[2] - self.start_x, kp[3] - self.start_y],
+                [kp[6] - self.start_x, kp[7] - self.start_y],
+                [kp[4] - self.start_x, kp[5] - self.start_y],
+            ],
+            dtype=np.int32,
+        ).reshape(-1, 1, 2)
+        cv2.fillPoly(self._cached_roi_surface, [corners], _COURT_FILL)
+        self._cached_surface_mask = np.any(self._cached_roi_surface != 0, axis=-1)
 
     @property
     def calibration_is_approximate(self) -> bool:
@@ -506,15 +525,10 @@ class MiniCourt:
         """Fill court with surface colour, then draw lines, net, and keypoint markers."""
         kp = self.drawing_key_points
 
-        # Court surface fill - outer corners in correct (non-self-intersecting) winding
-        surface  = np.zeros_like(frame)
-        corners  = np.array(
-            [[kp[0], kp[1]], [kp[2], kp[3]], [kp[6], kp[7]], [kp[4], kp[5]]],
-            dtype=np.int32,
-        ).reshape(-1, 1, 2)
-        cv2.fillPoly(surface, [corners], _COURT_FILL)
-        mask = np.any(surface != 0, axis=-1)
-        frame[mask] = cv2.addWeighted(frame, 0.1, surface, 0.9, 0)[mask]
+        # Court surface fill using precomputed ROI mask (zero heap allocations)
+        roi = frame[self.start_y:self.end_y, self.start_x:self.end_x]
+        mask = self._cached_surface_mask
+        roi[mask] = cv2.addWeighted(roi, 0.1, self._cached_roi_surface, 0.9, 0)[mask]
 
         # Court lines
         for a, b in self.lines:

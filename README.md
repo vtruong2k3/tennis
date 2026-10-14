@@ -33,7 +33,7 @@ source .venv/bin/activate            # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .
 
-# Download pretrained AI models (YOLOv8x, TrackNet, ResNet-50 court detector)
+# Download pretrained AI models (YOLO11x, TrackNet, ResNet-50 court detector)
 python scripts/download_models.py
 ```
 
@@ -54,7 +54,7 @@ Outputs land in `output/`:
 
 ### 4. Running the Web Platform (React 19 + Three.js + FastAPI)
 
-#### Start Backend Engine Server (Port 4200)
+#### Start Backend Engine Server (Port 5200)
 ```bash
 source .venv/bin/activate
 python engine_server.py
@@ -107,7 +107,7 @@ predicted line and asks whether those pixels are actually brighter than the surf
 pixels to either side. A predicted line lying on the crowd fails; one lying on paint
 passes.
 
-**Player tracking.** YOLOv8x with ByteTrack, then a six-criteria selection aggregated
+**Player tracking.** YOLO11x with ByteTrack, then a six-criteria selection aggregated
 across the whole clip. Frame-zero selection was the original approach and it failed on real
 footage: on one eval clip the true player is a track id that does not exist at frame zero.
 
@@ -507,7 +507,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**427 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**433 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -838,7 +838,7 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 427 tests, needs the weights
+pytest tests/                                       # 433 tests, needs the weights
 pytest tests/ -m "not slow"                         # 411, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
@@ -869,7 +869,7 @@ models/               small trained weights (committed); large weights fetched b
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py, public media tooling
 docs/public/media/    3-D preview, self-contained viewer and static viewer screenshot
-tests/                427 unit and integration tests
+tests/                433 unit and integration tests
 tools/                label_shots.py, keyboard-driven contact and bounce labelling
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
@@ -902,7 +902,7 @@ Written while building, in `notes/`:
 - **TrackNet** ([yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet)), ball
   detection weights and the labelled dataset behind every event-detection number here
 - **TennisCourtDetector**, the court keypoint dataset behind the fine-tuned model
-- **Ultralytics YOLOv8**, player detection
+- **Ultralytics YOLO11**, player detection
 - **MediaPipe**, pose estimation
 - **THETIS**, shot type dataset
 - PyTorch, OpenCV, NumPy, pandas

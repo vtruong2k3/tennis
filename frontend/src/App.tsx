@@ -131,7 +131,7 @@ function AppBody() {
             <SummaryCards summary={MATCH_INFO} />
 
             {/* Trình Phát Video Phân Tích & AR Telemetry HUD (Full High-Speed Optical HUD) */}
-            <VideoHudPlayer />
+            <VideoHudPlayer selectedRally={selectedRally} onSelectRally={setSelectedRally} />
 
             {/* Player Head-to-Head Comparison (VĐV 1 vs VĐV 2) */}
             <PlayerComparison player1={PLAYER_1} player2={PLAYER_2} />
@@ -140,12 +140,12 @@ function AppBody() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
               {/* Left Column: Court Tracking (7 cols on large screens) */}
               <div className="lg:col-span-7 flex flex-col">
-                <CourtTracking selectedRally={selectedRally} />
+                <CourtTracking selectedRally={selectedRally} onSelectRally={setSelectedRally} />
               </div>
 
               {/* Right Column: Shot Structure & Intensity (5 cols) */}
               <div className="lg:col-span-5 flex flex-col gap-5 justify-between">
-                <ShotBreakdown />
+                <ShotBreakdown selectedRally={selectedRally} />
                 <IntensityThreshold />
               </div>
             </div>
@@ -161,7 +161,7 @@ function AppBody() {
         )}
 
         {/* Screen 2: Video & AR HUD */}
-        {activeTab === 'video' && <VideoHudPlayer />}
+        {activeTab === 'video' && <VideoHudPlayer selectedRally={selectedRally} onSelectRally={setSelectedRally} />}
 
         {/* Screen 3: Telemetry & Tốc Độ */}
         {activeTab === 'telemetry' && <TelemetrySpeedScreen />}

@@ -175,30 +175,41 @@ class TrackNetV3BallTracker:
             self.INPUT_WIDTH, self.INPUT_HEIGHT, self.device
         )
 
+        # Free lingering GPU memory from previous stages (e.g. YOLO11x)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # BallTrackerNet (TrackNet v2) outputs 256 channels at 360x640, so batch_size 16
+        # causes high VRAM spikes. Cap batch size to 2 for BallTrackerNet to prevent CUDA OOM.
+        effective_batch_size = self.batch_size
+        if not isinstance(self.model, TrackNetV3Model):
+            effective_batch_size = min(self.batch_size, 2)
+
         # 2. Batch preprocessing and inference
-        logger.info(f"Running TrackNetV3 batched inference (batch_size={self.batch_size})...")
+        logger.info(f"Running TrackNetV3 batched inference (batch_size={effective_batch_size})...")
         raw_detections: list[list[float] | None] = []
 
-        # Prepare pre-resized RGB frames to accelerate batching
-        resized_frames = [
-            cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2RGB), (self.INPUT_WIDTH, self.INPUT_HEIGHT)).astype(np.float32) / 255.0
-            for f in frames
-        ]
+        # Memory-efficient sliding frame preprocessor (LRU cache keeps max 8 frames in RAM)
+        from functools import lru_cache
+
+        @lru_cache(maxsize=8)
+        def get_resized_chw(idx: int) -> np.ndarray:
+            clamped = max(0, min(num_frames - 1, idx))
+            small = cv2.resize(frames[clamped], (self.INPUT_WIDTH, self.INPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+            small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            return (small.astype(np.float32) / 255.0).transpose(2, 0, 1)
 
         with torch.no_grad():
-            for i in range(0, num_frames, self.batch_size):
-                batch_end = min(num_frames, i + self.batch_size)
+            for i in range(0, num_frames, effective_batch_size):
+                batch_end = min(num_frames, i + effective_batch_size)
                 batch_tensors = []
 
                 for idx in range(i, batch_end):
-                    prev_f = resized_frames[max(0, idx - 1)]
-                    curr_f = resized_frames[idx]
-                    next_f = resized_frames[min(num_frames - 1, idx + 1)]
+                    prev_f = get_resized_chw(idx - 1)
+                    curr_f = get_resized_chw(idx)
+                    next_f = get_resized_chw(idx + 1)
 
-                    stacked = np.concatenate(
-                        [prev_f.transpose(2, 0, 1), curr_f.transpose(2, 0, 1), next_f.transpose(2, 0, 1)],
-                        axis=0,
-                    )
+                    stacked = np.concatenate([prev_f, curr_f, next_f], axis=0)
                     batch_tensors.append(stacked)
 
                 b_tensor = torch.from_numpy(np.stack(batch_tensors, axis=0)).to(self.device)

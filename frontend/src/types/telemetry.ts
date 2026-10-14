@@ -42,7 +42,9 @@ export interface PlayerStats {
   distanceM?: number; // Quãng đường di chuyển (mét)
   leftSidePct?: number; // Tỷ lệ đứng nửa sân trái (%)
   dominantShotLabel: string;
+  shotTypes?: Record<string, number>;
   breakdown: {
+    type?: string;
     name: string;
     shots: number;
     percentage: number;

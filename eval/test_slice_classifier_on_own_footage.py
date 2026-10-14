@@ -130,7 +130,7 @@ def test_video_1(est):
     from trackers import PlayerTracker
 
     frames = read_video("input_videos/input_video.mp4")
-    tracker = PlayerTracker(model_path="yolov8x")
+    tracker = PlayerTracker(model_path="yolo11x")
     pdets = tracker.detect_frames(frames, read_from_stub=False, stub_path=None)
 
     # frame 120: bottom player mid-run into a forehand (visually confirmed, journal 0021 grid images)
