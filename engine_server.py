@@ -366,7 +366,6 @@ async def run_pipeline_worker(run_id: str, video_path: str):
     run_dir.mkdir(parents=True, exist_ok=True)
     log_file = run_dir / "run.log"
     loop = asyncio.get_running_loop()
-
     # 1. Quick probe of video duration
     duration_s = 0.0
     total_frames = 0
@@ -523,36 +522,46 @@ async def run_pipeline_worker(run_id: str, video_path: str):
             except Exception as exc:
                 logger.error(f"Match aggregation failed: {exc}", exc_info=True)
 
-            # Ensure web-playable root video.mp4 contains the FULL MATCH video
+            # Ensure web-playable root video.mp4 contains the match video
+            root_web_video = run_dir / "video.mp4"
             try:
-                root_web_video = run_dir / "video.mp4"
+                rally_1_video = rallies_dir / "rally_01" / "video.mp4"
                 if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                    ffmpeg_bin = get_ffmpeg_binary()
-                    if ffmpeg_bin:
-                        cmd = [
-                            str(ffmpeg_bin), "-y", "-i", str(video_path),
-                            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                            "-c:a", "copy", str(root_web_video),
-                        ]
-                        try:
-                            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                        except Exception as e_vid:
-                            logger.warning(f"Failed to transcode full match video: {e_vid}")
+                    if len(rally_segments) == 1 and rally_1_video.exists() and rally_1_video.stat().st_size > 0:
+                        shutil.copy2(rally_1_video, root_web_video)
+                    else:
+                        ffmpeg_bin = get_ffmpeg_binary()
+                        if ffmpeg_bin:
+                            cmd = [
+                                str(ffmpeg_bin), "-y", "-i", str(video_path),
+                                "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+                                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                                "-c:a", "aac", "-b:a", "128k",
+                                str(root_web_video),
+                            ]
+                            try:
+                                await loop.run_in_executor(
+                                    None,
+                                    lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                                )
+                            except Exception as e_vid:
+                                logger.warning(f"Failed to transcode full match video: {e_vid}")
 
-                    if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                        rally_1_video = rallies_dir / "rally_01" / "video.mp4"
-                        if rally_1_video.exists():
-                            shutil.copy2(rally_1_video, root_web_video)
+                        if not root_web_video.exists() or root_web_video.stat().st_size == 0:
+                            if rally_1_video.exists():
+                                shutil.copy2(rally_1_video, root_web_video)
             except Exception as e_vid_outer:
                 logger.warning(f"Error preparing root video.mp4: {e_vid_outer}")
 
             meta_path = run_dir / "meta.json"
             meta = {
+                "runId": run_id,
                 "status": "COMPLETED",
                 "mode": "multi_rally",
                 "total_rallies": len(rally_segments),
                 "duration_s": duration_s,
+                "hasVideo": root_web_video.exists() and root_web_video.stat().st_size > 0,
+                "videoVerified": True,
             }
             meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -566,6 +575,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                 "status": "COMPLETED",
                 "files": get_run_files(run_dir),
             })
+            active_tasks.pop(run_id, None)
             return
 
     # ── SINGLE-RALLY DIRECT PIPELINE (FALLBACK OR SHORT CLIPS <= 25s) ────────
@@ -681,17 +691,27 @@ async def run_pipeline_worker(run_id: str, video_path: str):
             except Exception:
                 pass
             active_subprocesses.pop(run_id, None)
+        meta_path = run_dir / "meta.json"
+        meta = {"runId": run_id, "status": "CANCELLED"}
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         broadcast_event(run_id, {
             "type": "done",
             "status": "CANCELLED",
             "message": "Đã hủy phân tích",
         })
+    except Exception as exc:
         logger.exception(f"Unexpected error in run {run_id}: {exc}")
+        meta_path = run_dir / "meta.json"
+        meta = {"runId": run_id, "status": "FAILED", "error": str(exc)}
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         broadcast_event(run_id, {
             "type": "done",
             "status": "FAILED",
             "error": {"code": "EXCEPTION", "message": str(exc)},
         })
+    finally:
+        active_tasks.pop(run_id, None)
+        active_subprocesses.pop(run_id, None)
 
 
 @app.post("/internal/v1/test/start")
@@ -748,18 +768,37 @@ async def get_run_events(request: Request, runId: str = Query(...)):
             # 1. Replay historical events
             for prev_ev in run_history_events.get(runId, []):
                 yield {"data": json.dumps(prev_ev)}
+                if prev_ev.get("type") == "done":
+                    return
 
-            # If already finished and no events were buffered
+            # If already finished and no events were buffered or done wasn't captured in history
             meta_path = run_dir / "meta.json"
-            if meta_path.exists() and runId not in active_tasks:
+            if meta_path.exists():
                 try:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    if meta.get("status") == "COMPLETED":
+                    st = meta.get("status")
+                    if st == "COMPLETED":
+                        yield {
+                            "data": json.dumps({
+                                "type": "stage",
+                                "stage": "completed",
+                                "message": "Hoàn tất phân tích!",
+                            })
+                        }
                         yield {
                             "data": json.dumps({
                                 "type": "done",
                                 "status": "COMPLETED",
                                 "files": get_run_files(run_dir),
+                            })
+                        }
+                        return
+                    elif st in ("FAILED", "CANCELLED"):
+                        yield {
+                            "data": json.dumps({
+                                "type": "done",
+                                "status": st,
+                                "error": {"code": "DONE", "message": meta.get("error", st)},
                             })
                         }
                         return

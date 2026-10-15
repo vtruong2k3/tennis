@@ -131,12 +131,28 @@ export function useRunMonitor(onCompleted?: () => void) {
               }
             }
           };
-          es.onerror = () => {
+          es.onerror = async () => {
+            closeStream();
+            try {
+              const res = await fetch('/internal/v1/test/runs');
+              if (res.ok) {
+                const data = await res.json();
+                const matched = (data.runs || []).find((r: { runId: string; status: string }) => r.runId === runId);
+                if (matched?.status === 'COMPLETED') {
+                  setPhase('completed');
+                  setStage('');
+                  pushLog('✓ Phân tích hoàn tất! Kết quả đã sẵn sàng.');
+                  onCompleted?.();
+                  return;
+                }
+              }
+            } catch {
+              // ignore
+            }
             // BE giữ kết nối bằng heartbeat; lỗi ở đây thường là run đã kết thúc
             // hoặc mất kết nối — nếu chưa nhận 'done' thì đánh dấu failed.
             setPhase((cur) => (cur === 'running' ? 'failed' : cur));
             setError((cur) => cur ?? 'Mất kết nối sự kiện với engine');
-            closeStream();
           };
         })
         .catch((err: Error) => {

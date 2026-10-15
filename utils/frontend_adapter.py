@@ -148,13 +148,13 @@ def build_engine_result(
         combined_types[st] = combined_types.get(st, 0) + c
     for st, c in p2_types.items():
         combined_types[st] = combined_types.get(st, 0) + c
-    if not combined_types:
-        combined_types = {"Groundstroke": max(1, p1_shots + p2_shots)}
+    if not combined_types and (p1_shots + p2_shots) > 0:
+        combined_types = {"Groundstroke": p1_shots + p2_shots}
 
     rally = {
         "startMs": 0,
         "endMs": duration_ms,
-        "shotCount": max(1, p1_shots + p2_shots),
+        "shotCount": p1_shots + p2_shots,
         "shotTypes": combined_types,
         "court": bool(summary.get("court_calibrated", True)),
         "avgShotSpeedKmh": round(avg_flight, 1),

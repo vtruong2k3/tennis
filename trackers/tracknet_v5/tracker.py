@@ -80,33 +80,41 @@ class TrackNetV5BallTracker:
             except Exception as exc:
                 logger.error(f"Failed to load TrackNetV5 weights from {v5_path}: {exc}")
 
-        # Checkpoint not found: check fallback
-        fallback_path = Path(self.fallback_model_path) if self.fallback_model_path else None
-        if fallback_path and fallback_path.exists():
-            try:
-                from trackers.tracknet_v3 import TrackNetV3BallTracker
-                logger.warning(
-                    f"TrackNetV5 weights not found at '{v5_path}'. "
-                    f"Falling back to TrackNetV3/V2 ({fallback_path}) to maintain uninterrupted pipeline operation."
-                )
-                self.fallback_tracker = TrackNetV3BallTracker(
-                    model_path=str(fallback_path),
-                    batch_size=self.batch_size,
-                    conf_threshold=self.conf_threshold,
-                    device=self.device,
-                )
-                self._is_using_fallback = True
-                return
-            except Exception as fb_exc:
-                logger.error(f"Failed to initialize fallback tracker: {fb_exc}")
+        # Checkpoint not found: check fallback candidates in order of priority
+        fallback_candidates: list[Path] = []
+        if self.fallback_model_path:
+            fallback_candidates.append(Path(self.fallback_model_path))
+        fallback_candidates.extend([
+            Path("models/tracknet.pt"),
+            Path("models/tracknet_v3.pt"),
+            Path("models/tracknet_v5.pt"),
+        ])
 
-        # If no weights exist anywhere, instantiate architectural TrackNetV5
-        logger.warning(
-            f"No pre-trained weights found for TrackNetV5 at '{v5_path}'. "
-            "Initializing fresh TrackNetV5 architecture (trainable or evaluation mode)."
+        for fb_path in fallback_candidates:
+            if fb_path.exists():
+                try:
+                    from trackers.tracknet_v3 import TrackNetV3BallTracker
+                    logger.warning(
+                        f"TrackNetV5 weights not found at '{v5_path}'. "
+                        f"Falling back to TrackNetV3/V2 ({fb_path}) to maintain uninterrupted pipeline operation."
+                    )
+                    self.fallback_tracker = TrackNetV3BallTracker(
+                        model_path=str(fb_path),
+                        batch_size=self.batch_size,
+                        conf_threshold=self.conf_threshold,
+                        device=self.device,
+                    )
+                    self._is_using_fallback = True
+                    return
+                except Exception as fb_exc:
+                    logger.error(f"Failed to initialize fallback tracker at {fb_path}: {fb_exc}")
+
+        # If no weights exist anywhere, log error and do not run unweighted random inference
+        logger.error(
+            f"No pre-trained weights found for TrackNetV5 at '{v5_path}' or any fallback paths. "
+            "TrackNet ball detection will return empty detections."
         )
-        self.model = TrackNetV5().to(self.device)
-        self.model.eval()
+        self.model = None
         self._is_using_fallback = False
 
     def _output_to_bbox(

@@ -179,3 +179,29 @@ def test_empty_input_does_not_raise(selected):
     result = assess_selection(selected, NET_Y, people_detected=0)
     assert result.status == SELECTION_FAILED
     json.dumps(result.as_dict())
+
+
+def test_static_ballboy_not_selected_over_moving_player():
+    """Stationary tracks (ballboys/judges) must be penalized vs moving athletes."""
+    from trackers.player_tracker import PlayerTracker
+
+    tracker = PlayerTracker.__new__(PlayerTracker)
+    court_kps = [
+        300, 200, 1000, 200,
+        100, 800, 1200, 800,
+        350, 400, 950, 400,
+        300, 500, 1000, 500,
+        650, 500,
+    ]
+
+    detections = []
+    for i in range(50):
+        detections.append({
+            1: [400 + i * 8, 750 + (i % 5) * 10, 480 + i * 8, 900 + (i % 5) * 10],  # near moving player
+            2: [500 + (i % 10) * 15, 180, 550 + (i % 10) * 15, 260],                # far moving player
+            3: [120 + (i % 2), 180, 150 + (i % 2), 240],                             # static ballboy
+        })
+
+    chosen = tracker._choose_players_over_clip(detections, court_kps)
+    assert 1 in chosen and 2 in chosen
+    assert 3 not in chosen

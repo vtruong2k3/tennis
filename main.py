@@ -599,9 +599,14 @@ def main():
         import pickle
         if use_tracknet_v5:
             from trackers.tracknet_v5 import TrackNetV5BallTracker
+            fallback_model = None
+            for cand in [cfg["models"].get("tracknet_v3"), cfg["models"].get("tracknet"), "models/tracknet.pt"]:
+                if cand and Path(cand).exists():
+                    fallback_model = cand
+                    break
             ball_tracker = TrackNetV5BallTracker(
                 model_path=cfg["models"].get("tracknet_v5", "models/tracknet_v5.pt"),
-                fallback_model_path=cfg["models"].get("tracknet_v3", cfg["models"].get("tracknet", "models/tracknet.pt")),
+                fallback_model_path=fallback_model,
                 conf_threshold=cfg["detection"].get("ball_confidence", 0.5),
             )
             tracker_desc = "TrackNetV5 (MDD signed polarity + R-STR Transformer refinement)"
@@ -723,6 +728,16 @@ def main():
         )
         # Which KIND of failure, because the two need different things from the user.
         logger.warning(f"  {court_detail['reason']}")
+
+    # Pick canonical court_keypoints reference from the frame with maximum line support
+    # (avoid poisoning player selection and layout with an invalid frame 0 cut/wipe)
+    if court_detail.get("scores"):
+        sample_indices = np.linspace(0, len(video_frames) - 1, len(court_detail["scores"]), dtype=int)
+        best_sample_idx = int(np.argmax(court_detail["scores"]))
+        best_frame_idx = int(sample_indices[best_sample_idx])
+        court_keypoints = all_court_keypoints[best_frame_idx]
+        logger.info(f"  Canonical court keypoints chosen from frame {best_frame_idx} "
+                    f"(line support {court_detail['scores'][best_sample_idx]:.3f})")
 
     # ── 5. Player selection ────────────────────────────────────────
     logger.info("[5/9] Filtering to 2 main players...")

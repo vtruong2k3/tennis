@@ -60,6 +60,7 @@ class TemporalShotClassifierEngine:
         # 2. Temporal Classifier Model
         self.model = TemporalShotClassifier(window_size=self.window_size).to(self.device)
         self.temporal_model_path = classifier_weights or temporal_model_path
+        self.has_trained_weights = False
         self._load_temporal_model()
 
     def _load_temporal_model(self) -> None:
@@ -68,6 +69,7 @@ class TemporalShotClassifierEngine:
                 ckpt = torch.load(self.temporal_model_path, map_location=self.device, weights_only=False)
                 state = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
                 self.model.load_state_dict(state, strict=False)
+                self.has_trained_weights = True
                 logger.info(f"Loaded TemporalShotClassifier weights from {self.temporal_model_path}")
             except Exception as exc:
                 logger.warning(f"Could not load temporal shot weights ({exc}). Using initialized weights.")
@@ -164,57 +166,99 @@ class TemporalShotClassifierEngine:
             if prev_y is not None and next_y is not None:
                 ball_velocity_y = next_y - prev_y
 
+        # Determine player court half (top vs bottom court)
+        p_box = None
+        if shot_frame < len(player_detections):
+            p_box = player_detections[shot_frame].get(player_id)
+        is_top_player = False
+        if p_box is not None:
+            frame_h = video_frames[0].shape[0] if len(video_frames) > 0 else 720
+            player_mid_y = (p_box[1] + p_box[3]) / 2.0
+            is_top_player = (player_mid_y < 0.5 * frame_h)
+        elif player_y_rel is not None:
+            is_top_player = (player_y_rel < 0.5)
+
         # 2. Extract 21-frame crop window of hitting player
         crops = self.extract_player_crop_window(video_frames, shot_frame, player_detections, player_id)
 
         # 3. Extract normalized 17-keypoint skeleton sequence (21, 17, 2)
         norm_skeleton = self.pose_extractor.extract_keypoints_from_crops(crops)
 
-        # 4. Neural Network Prediction
-        skeleton_tensor = torch.from_numpy(norm_skeleton).unsqueeze(0).float().to(self.device)
-        with torch.no_grad():
-            probs = self.model.predict_probabilities(skeleton_tensor).squeeze(0).cpu().numpy()
-
-        # 5. Dynamic Swing Kinematics Analysis
-        # Analyze right wrist and left wrist movement relative to shoulders over time
-        r_wrist_x = norm_skeleton[:, R_WRIST, 0]
-        l_wrist_x = norm_skeleton[:, L_WRIST, 0]
-        mid_sh_x = (norm_skeleton[:, R_SHOULDER, 0] + norm_skeleton[:, L_SHOULDER, 0]) / 2.0
-
-        # Check dominant wrist swing arc from backswing (early) to follow-through (late)
-        r_wrist_dx = r_wrist_x[-1] - r_wrist_x[0]  # Right hand horizontal motion
-        l_wrist_dx = l_wrist_x[-1] - l_wrist_x[0]  # Left hand horizontal motion
-
-        # Wrist distance across chest (midline crossing test over the swing)
-        r_cross = (r_wrist_x - mid_sh_x).mean()
-
-        # Dynamic heuristic adjustments
-        if abs(r_wrist_dx) > abs(l_wrist_dx):
-            # Right-hand dominant swing
-            if r_wrist_dx < -0.3 or r_cross < -0.15:
-                # Arm sweeps across body to left -> Forehand for righty, or Backhand across
-                probs[SHOT_CLASSES.index("Forehand")] += 0.35
-            else:
-                probs[SHOT_CLASSES.index("Backhand")] += 0.30
+        # 4. Probabilities initialization
+        if self.has_trained_weights:
+            skeleton_tensor = torch.from_numpy(norm_skeleton).unsqueeze(0).float().to(self.device)
+            with torch.no_grad():
+                probs = self.model.predict_probabilities(skeleton_tensor).squeeze(0).cpu().numpy()
         else:
-            # Two-handed or Left-hand dominant
-            if l_wrist_dx > 0.3:
-                probs[SHOT_CLASSES.index("Forehand")] += 0.30
-            else:
-                probs[SHOT_CLASSES.index("Backhand")] += 0.30
+            # When no trained checkpoint exists, do NOT sample random weights
+            probs = np.zeros(len(SHOT_CLASSES), dtype=np.float32)
 
-        # 6. Physical Context Fusion (Net proximity & ball downward smash)
+        # 5. Dynamic Swing Kinematics & Biomechanical Analysis
+        center_kp = norm_skeleton[self.half_window]
+        l_sho = center_kp[L_SHOULDER]
+        r_sho = center_kp[R_SHOULDER]
+        l_wri = center_kp[L_WRIST]
+        r_wri = center_kp[R_WRIST]
+
+        sh_width = float(np.linalg.norm(r_sho - l_sho)) if not (np.isnan(r_sho).any() or np.isnan(l_sho).any()) else 0.3
+        sh_width = max(sh_width, 0.15)
+        mid_sh_x = float(r_sho[0] + l_sho[0]) / 2.0
+
+        # Two-handed grip check (wrists in close proximity)
+        wrist_gap = float(np.linalg.norm(r_wri - l_wri)) if not (np.isnan(r_wri).any() or np.isnan(l_wri).any()) else 999.0
+        is_two_handed = (wrist_gap < 0.50 * sh_width)
+
+        # Anatomical side of swing:
+        # Bottom player (facing net): screen right (+x) is player's anatomical RIGHT side.
+        # Top player (facing camera): screen left (-x) is player's anatomical RIGHT side.
+        # r_offset > 0: hitting hand is on player's anatomical RIGHT side (Forehand for right-handers).
+        # r_offset < 0: hitting hand crossed to player's anatomical LEFT side (Backhand).
+        r_offset = (r_wri[0] - mid_sh_x) if not is_top_player else (mid_sh_x - r_wri[0])
+
+        # Integrate ball relative position if available
+        ball_bias = 0.0
+        if ball_detections is not None and shot_frame < len(ball_detections):
+            b = ball_detections[shot_frame].get(1)
+            if b and p_box:
+                bc_x = (b[0] + b[2]) / 2.0
+                px_mid = (p_box[0] + p_box[2]) / 2.0
+                dx = bc_x - px_mid
+                # In screen space, ball to player's right is positive dx for bottom, negative dx for top
+                ball_bias = (dx / max(p_box[2] - p_box[0], 20.0)) if not is_top_player else (-dx / max(p_box[2] - p_box[0], 20.0))
+
+        effective_bias = 0.65 * r_offset + 0.35 * ball_bias
+
+        # Two-handed backhand evidence: hands together on player's anatomical left side
+        if is_two_handed and r_offset < 0.15:
+            probs[SHOT_CLASSES.index("Backhand")] += 0.90
+        elif effective_bias > 0.05:
+            # Clearly on player's dominant hitting side -> Forehand
+            probs[SHOT_CLASSES.index("Forehand")] += 0.82 + min(0.14, float(effective_bias) * 0.1)
+        elif effective_bias < -0.05:
+            # Crossed over body to non-dominant side -> Backhand
+            probs[SHOT_CLASSES.index("Backhand")] += 0.82 + min(0.14, float(-effective_bias) * 0.1)
+        else:
+            # Swing arc horizontal progression:
+            # Bottom player righty forehand: sweeps +x to -x (dx < 0)
+            # Top player righty forehand: sweeps -x to +x (dx > 0)
+            r_wrist_dx = norm_skeleton[-1, R_WRIST, 0] - norm_skeleton[0, R_WRIST, 0]
+            swing_is_fh = (r_wrist_dx < 0) if not is_top_player else (r_wrist_dx > 0)
+            if swing_is_fh:
+                probs[SHOT_CLASSES.index("Forehand")] += 0.70
+            else:
+                probs[SHOT_CLASSES.index("Backhand")] += 0.70
+
+        # 6. Physical Context Fusion (Net proximity -> Volley, steep downward smash)
         if ball_velocity_y is not None and player_y_rel is not None:
-            # If near net (Volley zone)
             if abs(player_y_rel - 0.5) < 0.15:
-                probs[SHOT_CLASSES.index("Volley")] += 0.40
-            # If ball plunges downwards sharply (Smash)
+                probs[SHOT_CLASSES.index("Volley")] += 0.90
             if ball_velocity_y > 15.0:
-                probs[SHOT_CLASSES.index("Smash")] += 0.35
+                probs[SHOT_CLASSES.index("Smash")] += 0.85
 
         # Re-normalize probabilities
         best_idx = int(np.argmax(probs))
         pred_label = SHOT_CLASSES[best_idx]
-        confidence = float(np.clip(probs[best_idx] / np.sum(probs), 0.60, 0.96))
+        total_p = float(np.sum(probs))
+        confidence = float(np.clip(probs[best_idx] / max(total_p, 1e-6), 0.75, 0.96))
 
         return pred_label, confidence

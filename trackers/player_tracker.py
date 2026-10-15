@@ -49,6 +49,7 @@ class PlayerTracker:
         kid and would poison every downstream metric.
         """
         totals = {}
+        track_centers = {}
         for player_dict in player_detections:
             if not player_dict:
                 continue
@@ -59,30 +60,51 @@ class PlayerTracker:
                 acc['score_sum']   += cand['score']
                 acc['frames']      += 1
                 acc['bottom_votes'] += 1 if cand['is_bottom_half'] else 0
+                track_centers.setdefault(cand['id'], []).append(cand['center'])
 
         if not totals:
             print("  [PLAYER SELECTION V3] WARNING: no player tracks found in clip")
             return []
 
         min_frames = max(1, int(len(player_detections) * self.MIN_TRACK_PERSISTENCE))
-        candidates = [
-            {
+        candidates = []
+        for track_id, acc in totals.items():
+            if acc['frames'] < min_frames:
+                continue
+            mean_score = acc['score_sum'] / acc['frames']
+            pts = track_centers.get(track_id, [])
+            motion_bonus = 0.0
+            if len(pts) >= 15:
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                max_disp = ((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)**0.5
+                path_len = sum(
+                    ((pts[i][0] - pts[i - 1][0])**2 + (pts[i][1] - pts[i - 1][1])**2)**0.5
+                    for i in range(1, len(pts))
+                )
+                motion_ratio = path_len / len(pts)
+
+                # Penalize static tracks: ball boys, seated umpire, linesmen
+                if max_disp < 60.0 and motion_ratio < 0.6:
+                    motion_bonus -= 100.0
+                # Reward active tennis players moving across court
+                elif max_disp > 120.0 or motion_ratio > 1.2:
+                    motion_bonus += min(40.0, max_disp * 0.1)
+
+            candidates.append({
                 'id':             track_id,
-                'score':          acc['score_sum'] / acc['frames'],
+                'score':          mean_score + motion_bonus,
                 'frames':         acc['frames'],
                 # Half is decided by majority vote over the frames the track was
                 # seen in, so a player crossing the net mid-rally doesn't flip it.
                 'is_bottom_half': acc['bottom_votes'] * 2 >= acc['frames'],
-            }
-            for track_id, acc in totals.items()
-            if acc['frames'] >= min_frames
-        ]
+            })
 
         print(f"  [PLAYER SELECTION V3] {len(totals)} tracks seen, "
               f"{len(candidates)} persist ≥{min_frames}/{len(player_detections)} frames:")
         for c in sorted(candidates, key=lambda c: c['score'], reverse=True):
             half = "BOTTOM" if c['is_bottom_half'] else "TOP"
-            print(f"    ID {c['id']}: mean score={c['score']:.1f}, "
+            print(f"    ID {c['id']}: score={c['score']:.1f}, "
                   f"seen={c['frames']}, half={half}")
 
         # No track cleared the persistence bar (very short or heavily occluded
@@ -102,7 +124,7 @@ class PlayerTracker:
         chosen = [group[0] for group in (bottom, top) if group]
         for c, label in zip(chosen, ("BOTTOM" if bottom else "TOP", "TOP")):
             print(f"  [PLAYER SELECTION V3] {label} half winner: ID {c['id']} "
-                  f"(mean score={c['score']:.1f}, seen {c['frames']} frames)")
+                  f"(score={c['score']:.1f}, seen {c['frames']} frames)")
 
         if len(chosen) < 2:
             print("  [PLAYER SELECTION V3] WARNING: only one half has a qualifying "
@@ -178,6 +200,8 @@ class PlayerTracker:
         """
         court_bounds = self._estimate_court_bounds(court_keypoints)
         court_mid_y = (court_bounds['top'] + court_bounds['bottom']) / 2
+        court_half_height = max(1.0, (court_bounds['bottom'] - court_bounds['top']) / 2)
+        court_half_width = max(1.0, (court_bounds['right'] - court_bounds['left']) / 2)
 
         candidates = []
         for track_id, bbox in player_dict.items():
@@ -190,9 +214,15 @@ class PlayerTracker:
             score = 0
 
             # ====== CRITERION 1: Inside court bounds (+80 points) ======
-            if self._is_inside_court(player_center, court_bounds, margin=50):
+            # Allow realistic baseline margins: tennis players routinely move deep behind baselines
+            v_margin_tight = max(100.0, court_half_height * 0.45)
+            v_margin_wide = max(220.0, court_half_height * 0.90)
+            h_margin_tight = max(60.0, court_half_width * 0.25)
+            h_margin_wide = max(120.0, court_half_width * 0.45)
+
+            if self._is_inside_court(player_center, court_bounds, margin_x=h_margin_tight, margin_y=v_margin_tight):
                 score += 80
-            elif self._is_inside_court(player_center, court_bounds, margin=150):
+            elif self._is_inside_court(player_center, court_bounds, margin_x=h_margin_wide, margin_y=v_margin_wide):
                 score += 40
 
             # ====== CRITERION 2: Bounding box size (+60 points max) ======
@@ -215,7 +245,6 @@ class PlayerTracker:
 
             # Distance from horizontal center line (net)
             distance_from_net_line = abs(player_y - court_mid_y)
-            court_half_height = (court_bounds['bottom'] - court_bounds['top']) / 2
 
             # Players at baseline have high Y-distance from net
             baseline_score = 50 * (distance_from_net_line / max(court_half_height, 1))
@@ -226,7 +255,6 @@ class PlayerTracker:
             # Real players move along CENTER of court (left-right)
             # Ball boys are at EXTREME left or right edges
             court_center_x = (court_bounds['left'] + court_bounds['right']) / 2
-            court_half_width = (court_bounds['right'] - court_bounds['left']) / 2
             distance_from_center_x = abs(player_x - court_center_x)
 
             # Lower distance from center X = higher score
@@ -236,6 +264,11 @@ class PlayerTracker:
             # ====== CRITERION 6: Minimum size requirement (+20 points) ======
             if bbox_height > 80 and bbox_width > 30:
                 score += 20
+
+            # ====== CRITERION 7: Wall / perimeter penalty ======
+            # Penalize tiny tracks perched against the back wall/stadium perimeter
+            if player_y < court_bounds['top'] - 20 and bbox_area < 4500:
+                score -= 60
 
             candidates.append({
                 'id': track_id,
@@ -271,18 +304,21 @@ class PlayerTracker:
             'height': bottom - top
         }
     
-    def _is_inside_court(self, point, court_bounds, margin=0):
+    def _is_inside_court(self, point, court_bounds, margin=0, margin_x=None, margin_y=None):
         """
         Check if a point is inside the court bounds (with optional margin).
         
         Args:
             point: (x, y) tuple
             court_bounds: dict from _estimate_court_bounds
-            margin: pixels of margin outside court to still consider "inside"
+            margin: uniform pixels of margin outside court to still consider "inside"
+            margin_x, margin_y: optional directional margins
         """
+        mx = margin if margin_x is None else margin_x
+        my = margin if margin_y is None else margin_y
         x, y = point
-        return (court_bounds['left'] - margin <= x <= court_bounds['right'] + margin and
-                court_bounds['top'] - margin <= y <= court_bounds['bottom'] + margin)
+        return (court_bounds['left'] - mx <= x <= court_bounds['right'] + mx and
+                court_bounds['top'] - my <= y <= court_bounds['bottom'] + my)
     
 
 

@@ -184,13 +184,20 @@ def segment_video_rallies(
         return []
 
     # 2. Hysteresis grouping into contiguous rallies
+    # Standard MIN_LINE_SUPPORT (~0.22) initiates a rally.
+    # While active, continue_threshold (~0.10) keeps the rally alive across player occlusions and dynamic camera pans.
+    # A true camera cut (replays, crowd, close-ups) drops line support to < 0.06.
+    continue_threshold = 0.10
     segments_raw: list[tuple[int, int, list[float]]] = []
     current_start: int | None = None
     last_valid_frame: int | None = None
     current_scores: list[float] = []
 
-    for f_idx, is_valid, score in sampled_eval:
-        if is_valid:
+    for f_idx, is_valid_init, score in sampled_eval:
+        in_rally = (current_start is not None)
+        valid_here = is_valid_init or (in_rally and score >= continue_threshold)
+
+        if valid_here:
             if current_start is None:
                 current_start = f_idx
             last_valid_frame = f_idx
@@ -221,8 +228,14 @@ def segment_video_rallies(
     rallies: list[dict[str, Any]] = []
 
     for idx, (raw_start, raw_end, scores) in enumerate(segments_raw, 1):
-        # Apply asymmetric padding: generous lead-in for serve preparation & toss, lead-out for shot completion
-        start_f = max(0, raw_start - lead_in_frames)
+        # Determine earliest valid court frame before raw_start to prevent padding into camera cuts
+        earliest_court_f = 0
+        for f_idx, _, s_val in sampled_eval:
+            if f_idx < raw_start and s_val < 0.08:
+                earliest_court_f = max(earliest_court_f, f_idx + 1)
+
+        # Apply asymmetric padding: lead-in for serve preparation & toss, lead-out for shot completion
+        start_f = max(earliest_court_f, raw_start - lead_in_frames)
         if rallies:
             # Avoid overlapping into the preceding rally segment
             start_f = max(start_f, rallies[-1]["end_frame"])

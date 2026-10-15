@@ -75,7 +75,21 @@ export const Court3DCanvas: React.FC<Court3DCanvasProps> = ({
     cameraRef.current = camera;
 
     // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    } catch (e) {
+      console.warn("WebGL not supported or context lost", e);
+      container.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:13px;text-align:center;padding:20px;">
+          <div>
+            <div style="font-weight:600;margin-bottom:6px;color:#f1f5f9;">Môi trường không hỗ trợ WebGL 3D</div>
+            <div>Dữ liệu thống kê, tốc độ và quỹ đạo vẫn được hiển thị đầy đủ trên giao diện.</div>
+          </div>
+        </div>
+      `;
+      return;
+    }
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;

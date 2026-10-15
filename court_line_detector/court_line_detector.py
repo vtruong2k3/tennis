@@ -82,9 +82,9 @@ class CourtLineDetector:
                 
         return video_frames
     
-    def predict_all_frames(self, video_frames, smooth=True, window_size=5):
+    def predict_all_frames(self, video_frames, smooth=True, window_size=5, batch_size=16):
         """
-        Detect court keypoints for ALL frames in the video.
+        Detect court keypoints for ALL frames in the video with batching.
         
         This is crucial for handling camera motion - instead of detecting keypoints
         once (frame 0), we detect them every frame to handle camera shifts.
@@ -93,32 +93,47 @@ class CourtLineDetector:
             video_frames: List of video frames
             smooth: Whether to apply temporal smoothing (reduces jitter)
             window_size: Size of smoothing window (higher = smoother but more lag)
+            batch_size: Number of frames per batched forward pass
             
         Returns:
             List of keypoint arrays, one per frame
-            
-        Concept Explanation:
-        -------------------
-        When a camera moves, the court appears to move in the video. By detecting
-        keypoints every frame, we track this "apparent motion" and can correctly
-        map player/ball positions even when the camera is not perfectly static.
         """
+        if not video_frames:
+            return []
+
         all_keypoints = []
+        num_frames = len(video_frames)
+        print(f"Detecting court keypoints for {num_frames} frames (batch_size={batch_size})...")
         
-        print(f"Detecting court keypoints for {len(video_frames)} frames...")
-        
-        for i, frame in enumerate(video_frames):
-            keypoints = self.predict(frame)
-            all_keypoints.append(keypoints)
-            
-            # Progress indicator every 100 frames
-            if (i + 1) % 100 == 0:
-                print(f"  Processed {i + 1}/{len(video_frames)} frames")
-        
+        orig_h, orig_w = video_frames[0].shape[:2]
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+
+        with torch.no_grad():
+            for i in range(0, num_frames, batch_size):
+                batch_frames = video_frames[i : min(num_frames, i + batch_size)]
+                resized_list = [
+                    cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2RGB), (224, 224))
+                    for f in batch_frames
+                ]
+                arr = np.stack([r.transpose(2, 0, 1) for r in resized_list], axis=0)
+                batch_tensor = (torch.from_numpy(arr).to(self.device).float() / 255.0 - mean) / std
+                outputs = self.model(batch_tensor).cpu().numpy()
+
+                for out in outputs:
+                    kp = out.copy()
+                    kp[::2] *= orig_w / 224.0
+                    kp[1::2] *= orig_h / 224.0
+                    all_keypoints.append(kp)
+
+                curr_done = min(num_frames, i + batch_size)
+                if curr_done % 100 == 0 or curr_done == num_frames:
+                    print(f"  Processed {curr_done}/{num_frames} frames")
+
         if smooth:
             print("Applying temporal smoothing to keypoints...")
             all_keypoints = self.smooth_keypoints(all_keypoints, window_size)
-        
+
         return all_keypoints
     
     def smooth_keypoints(self, keypoints_list, window_size=5):

@@ -47,7 +47,10 @@ from utils.bbox_utils import get_center_of_bbox
 # How far beyond a baseline a server may stand, as a fraction of court length.
 # Servers stand on or just behind the line; 12 % of court length (~3 m) is generous
 # enough for a deep stance without reaching into rally territory.
-BASELINE_TOLERANCE_FRAC = 0.12
+# How far beyond a baseline a server may stand, as a fraction of court length.
+# Servers stand on or just behind the line; 18 % of court length (~4 m) is generous
+# enough for deep server stances and projection variations without reaching into rally territory.
+BASELINE_TOLERANCE_FRAC = 0.18
 
 # The ball must clear the top of the player's box by this fraction of the box height.
 # Kept at 0 (simply "above the box") because a serving player's box often already
@@ -120,6 +123,16 @@ def is_serve(
 
     # ── Evidence 2: struck from the baseline or behind it ─────────────────────
     position = player_mini_court.get(frame, {}).get(player_id)
+    if position is None and player_mini_court.get(frame):
+        # Resolve ID discrepancy between raw tracking IDs and normalized player IDs
+        frame_mini = player_mini_court.get(frame, {})
+        if len(frame_mini) == 1:
+            position = next(iter(frame_mini.values()))
+        elif len(frame_mini) >= 2:
+            is_top = (py1 + py2) / 2.0 < 540.0
+            sorted_by_y = sorted(frame_mini.values(), key=lambda pt: pt[1])
+            position = sorted_by_y[0] if is_top else sorted_by_y[-1]
+
     if position is None:
         return result(False, "no mini-court position for hitter")
 
@@ -188,15 +201,23 @@ def detect_serve_frames(
     if single_rally:
         if not contact_frames:
             return []
-        first_contact = sorted(contact_frames)[0]
+        # Filter for genuine contact candidates that have ball & court presence
+        valid_contacts = [
+            f for f in sorted(contact_frames)
+            if f < len(ball_detections) and ball_detections[f].get(1) and player_mini_court.get(f)
+        ]
+        first_contact = valid_contacts[0] if valid_contacts else sorted(contact_frames)[0]
         # In a single rally, only the opening shot can be a serve
-        opening_window = max(1, int(round(0.75 * max(fps, 1.0))))
+        opening_window = max(1, int(round(1.5 * max(fps, 1.0))))
         opening_candidates = [
             f for f in candidates
             if abs(f - first_contact) <= opening_window
         ]
         if not opening_candidates:
-            return []
+            if candidates and candidates[0] <= first_contact + int(2.5 * max(fps, 1.0)):
+                opening_candidates = [candidates[0]]
+            else:
+                return []
         return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections))]
 
     if len(candidates) < 2:
