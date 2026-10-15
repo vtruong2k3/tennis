@@ -15,7 +15,8 @@ class ShotClassifier:
             'FOREHAND': 'Forehand',
             'BACKHAND': 'Backhand',
             'VOLLEY': 'Volley',
-            'SMASH': 'Smash'
+            'SMASH': 'Smash',
+            'SLICE': 'Slice'
         }
 
         # Shot colors for visualization (BGR format)
@@ -24,7 +25,8 @@ class ShotClassifier:
             self.SHOT_TYPES['FOREHAND']: (0, 255, 0),    # Green
             self.SHOT_TYPES['BACKHAND']: (255, 0, 0),    # Blue
             self.SHOT_TYPES['VOLLEY']: (255, 255, 0),    # Cyan
-            self.SHOT_TYPES['SMASH']: (0, 0, 255)        # Red
+            self.SHOT_TYPES['SMASH']: (0, 0, 255),       # Red
+            self.SHOT_TYPES['SLICE']: (255, 0, 255)      # Magenta/Purple
         }
 
         self.VOLLEY_DISTANCE_THRESHOLD = volley_threshold        # px from net (default 40)
@@ -309,7 +311,7 @@ def draw_shot_classifications(frames, shot_classifications, ball_shot_frames,
         legend_title = "SHOT TYPE LEGEND"
         (title_w, _), _ = cv2.getTextSize(legend_title, font, 0.65, thickness)
         legend_width = max(150, title_w + 30)
-        legend_height = 165  # Increased to fit 5 shot types
+        legend_height = 190  # Increased to fit 6 shot types
         legend_x = width - legend_width - 10  # Right edge
         legend_y = height - legend_height - 50  # Move up to avoid cutoff
         
@@ -330,7 +332,8 @@ def draw_shot_classifications(frames, shot_classifications, ball_shot_frames,
                       ("BH", "Backhand", shot_classifier.get_shot_color("Backhand")),
                       ("FH", "Forehand", shot_classifier.get_shot_color("Forehand")),
                       ("SE", "Serve",    shot_classifier.get_shot_color("Serve")),
-                      ("VO", "Volley",   shot_classifier.get_shot_color("Volley"))]
+                      ("VO", "Volley",   shot_classifier.get_shot_color("Volley")),
+                      ("SL", "Slice",    shot_classifier.get_shot_color("Slice"))]
         
         for idx, (abbr, name, color) in enumerate(shot_types):
             y_offset = legend_y + 55 + idx * 25

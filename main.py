@@ -943,129 +943,152 @@ def main():
         # label with no real basis in position data, so that is the only one replaced.
         # See utils/pose_shot_classifier.py.
         if cfg["pipeline"].get("use_pose_shots", False):
-            # Optional SAM 3D Body backend, tried first when configured. It matters for
-            # exactly one thing: MediaPipe finds the player on every frame and then omits
-            # the occluded arm, which on a backhand is the racket arm 44-58% of the time
-            # (eval/pose_availability_at_contacts.py, eval/sam3d_occluded_arm_test.py).
-            # Since forehand versus backhand is decided by where that arm is, the label is
-            # being read from a hand that is often not there.
-            #
-            # It runs only on contact frames, roughly 15 per clip, because at 1.58s per
-            # frame a per-frame pass would take about 30 minutes on a mid-range GPU.
-            # Falls back silently to MediaPipe when the weights are absent, which is the
-            # default, since they are under Meta's SAM License and are not redistributed
-            # with this MIT project.
-            pose_estimator = None
-            if cfg["pipeline"].get("use_sam3d_pose", False):
-                from utils.sam3d_pose import Sam3dPoseEstimator
-                candidate = Sam3dPoseEstimator(
-                    weights_dir=cfg["models"].get("sam3d_body", "models/sam3d_body")
-                )
-                if candidate.available:
-                    pose_estimator = candidate
-                    logger.info("  Pose backend: SAM 3D Body")
-                else:
-                    # Requested and unavailable. Falling through to MediaPipe here was
-                    # silent, and the two backends are measurably different: on identical
-                    # clips MediaPipe scores 85.5% balanced against SAM 3D's 66.4%, so a
-                    # run that quietly used the other one is not the run that was asked
-                    # for. Same class of defect as the homography fallback.
-                    logger.warning(
-                        "  use_sam3d_pose is on but the SAM 3D Body weights are not "
-                        "available, so MediaPipe is being used instead. Fetch them with "
-                        "python scripts/download_sam3d_body.py, or set "
-                        "pipeline.use_sam3d_pose: false to stop asking."
-                    )
+            shot_mode = cfg["pipeline"].get("shot_classifier_mode", "temporal_pose")
+            handled_by_temporal = False
 
-            if pose_estimator is None:
-                pose_estimator = PoseEstimator(
-                    model_path=cfg["models"].get("pose", "models/pose_landmarker_lite.task")
-                )
-            if pose_estimator.available:
-                upgraded = 0
-                # "Groundstroke" is included deliberately, and leaving it out was a
-                # bug. It is not a shot type the pipeline believes in: it is what a
-                # Volley or Smash is downgraded to when no physical evidence supported
-                # it, so it means "a ground stroke, side unknown". Those are exactly the
-                # shots pose exists to resolve, and excluding them meant the pose
-                # classifier never saw the cases that most needed it. On the reference
-                # clip that silently withheld 4 of 13 shots.
-                #
-                # Serve, Volley and Smash are still left alone: they carry genuine
-                # physical evidence (overhead reach, no bounce since the last contact)
-                # and pose has nothing to add to them.
-                UPGRADEABLE = ("Forehand", "Backhand", "Groundstroke")
-                for shot_frame, info in shot_classifications.items():
-                    if info["shot_type"] not in UPGRADEABLE:
-                        continue
-                    # Try the contact frame first, then the nearest frames either side.
-                    #
-                    # The contact frame is the worst moment to ask for a pose: the player
-                    # is fully extended, often rotated side-on, frequently occluded by
-                    # their own racket arm, and motion-blurred at broadcast shutter
-                    # speeds. Measured across the 9 eval clips with
-                    # eval/pose_availability_at_contacts.py, pose resolves on 77% of
-                    # contacts at the exact frame and 91% within +/-4 frames, so giving up
-                    # on the exact frame discards a seventh of all shots for no reason.
-                    #
-                    # Which side of the body a stroke comes off does not change in a
-                    # seventh of a second, so a neighbouring frame answers the same
-                    # question. The ball position is re-read at whichever frame is used,
-                    # rather than carried over from the contact frame, so the
-                    # wrist-to-ball check stays a like-for-like comparison.
-                    result = None
-                    landmarks = None
-                    player_bbox = None
-                    for offset in (0, -1, 1, -2, 2, -3, 3, -4, 4):
-                        f = shot_frame + offset
-                        if not (0 <= f < len(video_frames)):
-                            continue
-                        bbox = player_detections[f].get(info["player_id"])
-                        ball_bbox = ball_detections[f].get(1)
-                        if bbox is None or ball_bbox is None:
-                            continue
-                        player_bbox = bbox
-                        ball_xy = ((ball_bbox[0] + ball_bbox[2]) / 2.0,
-                                   (ball_bbox[1] + ball_bbox[3]) / 2.0)
-                        landmarks = pose_estimator.detect_in_bbox(video_frames[f], bbox)
-                        result = classify_forehand_backhand(
-                            landmarks, ball_xy,
-                            max_contact_distance=2.0 * (bbox[2] - bbox[0]),
+            if shot_mode == "temporal_pose":
+                try:
+                    from utils.temporal_shot_classifier import TemporalShotClassifierEngine
+                    yolo_pose_path = cfg["models"].get("yolo_pose", "yolo11n-pose.pt")
+                    temp_weights = cfg["models"].get("shot_classifier_temporal", "models/shot_classifier_temporal.pt")
+                    temporal_engine = TemporalShotClassifierEngine(
+                        yolo_pose_model=yolo_pose_path,
+                        classifier_weights=temp_weights if os.path.exists(temp_weights) else None,
+                        sequence_length=21
+                    )
+                    logger.info("  Pose backend: Temporal Shot Classifier (YOLO11-Pose + 21-frame Temporal Sequence)")
+                    upgraded = 0
+                    for shot_frame, info in shot_classifications.items():
+                        is_serve = (info.get("shot_type") == "Serve")
+                        res_shot, conf = temporal_engine.classify_shot(
+                            video_frames=video_frames,
+                            shot_frame=shot_frame,
+                            player_detections=player_detections,
+                            player_id=info["player_id"],
+                            ball_detections=ball_detections,
+                            is_serve=is_serve
                         )
-                        if result is not None:
-                            if offset:
-                                logger.debug(
-                                    f"  Frame {shot_frame}: pose resolved at {f} "
-                                    f"(offset {offset:+d})"
-                                )
-                            break
-                    if player_bbox is None:
-                        continue
-                    if result is not None:
-                        info["shot_type"] = result[0]
-                        info["pose_confidence"] = round(result[1], 2)
-                        upgraded += 1
-                        logger.debug(f"  Frame {shot_frame}: pose OK -> {result[0]} ({result[1]:.2f})")
+                        if res_shot is not None:
+                            old_type = info["shot_type"]
+                            info["shot_type"] = res_shot
+                            info["pose_confidence"] = round(float(conf), 2)
+                            upgraded += 1
+                            logger.debug(f"  Frame {shot_frame}: Temporal Pose -> {res_shot} ({conf:.2f}) [was {old_type}]")
+                    logger.info(
+                        f"  Temporal Pose shot analysis: {upgraded} of "
+                        f"{len(shot_classifications)} shots analyzed with 21-frame temporal pose"
+                    )
+                    handled_by_temporal = True
+                except Exception as e:
+                    logger.warning(
+                        f"  Temporal shot classifier encountered error ({e}), falling back to legacy single-frame pose."
+                    )
+                    handled_by_temporal = False
+
+            if not handled_by_temporal:
+                # Optional SAM 3D Body backend, tried first when configured. It matters for
+                # exactly one thing: MediaPipe finds the player on every frame and then omits
+                # the occluded arm, which on a backhand is the racket arm 44-58% of the time
+                # (eval/pose_availability_at_contacts.py, eval/sam3d_occluded_arm_test.py).
+                # Since forehand versus backhand is decided by where that arm is, the label is
+                # being read from a hand that is often not there.
+                #
+                # It runs only on contact frames, roughly 15 per clip, because at 1.58s per
+                # frame a per-frame pass would take about 30 minutes on a mid-range GPU.
+                # Falls back silently to MediaPipe when the weights are absent, which is the
+                # default, since they are under Meta's SAM License and are not redistributed
+                # with this MIT project.
+                pose_estimator = None
+                if cfg["pipeline"].get("use_sam3d_pose", False):
+                    from utils.sam3d_pose import Sam3dPoseEstimator
+                    candidate = Sam3dPoseEstimator(
+                        weights_dir=cfg["models"].get("sam3d_body", "models/sam3d_body")
+                    )
+                    if candidate.available:
+                        pose_estimator = candidate
+                        logger.info("  Pose backend: SAM 3D Body")
                     else:
-                        has_shoulders = bool(landmarks) and "LEFT_SHOULDER" in landmarks and "RIGHT_SHOULDER" in landmarks
-                        has_wrist = bool(landmarks) and ("LEFT_WRIST" in landmarks or "RIGHT_WRIST" in landmarks)
-                        if not landmarks:
-                            why = "no pose detected in crop"
-                        elif not has_shoulders:
-                            why = "shoulders missing"
-                        elif not has_wrist:
-                            why = "wrists missing"
+                        logger.warning(
+                            "  use_sam3d_pose is on but the SAM 3D Body weights are not "
+                            "available, so MediaPipe is being used instead. Fetch them with "
+                            "python scripts/download_sam3d_body.py, or set "
+                            "pipeline.use_sam3d_pose: false to stop asking."
+                        )
+
+                if pose_estimator is None:
+                    pose_estimator = PoseEstimator(
+                        model_path=cfg["models"].get("pose", "models/pose_landmarker_lite.task")
+                    )
+                if pose_estimator and pose_estimator.available:
+                    upgraded = 0
+                    # "Groundstroke" is included deliberately, and leaving it out was a
+                    # bug. It is not a shot type the pipeline believes in: it is what a
+                    # Volley or Smash is downgraded to when no physical evidence supported
+                    # it, so it means "a ground stroke, side unknown". Those are exactly the
+                    # shots pose exists to resolve, and excluding them meant the pose
+                    # classifier never saw the cases that most needed it. On the reference
+                    # clip that silently withheld 4 of 13 shots.
+                    #
+                    # Serve, Volley and Smash are still left alone: they carry genuine
+                    # physical evidence (overhead reach, no bounce since the last contact)
+                    # and pose has nothing to add to them.
+                    UPGRADEABLE = ("Forehand", "Backhand", "Groundstroke")
+                    for shot_frame, info in shot_classifications.items():
+                        if info["shot_type"] not in UPGRADEABLE:
+                            continue
+                        result = None
+                        landmarks = None
+                        player_bbox = None
+                        for offset in (0, -1, 1, -2, 2, -3, 3, -4, 4):
+                            f = shot_frame + offset
+                            if not (0 <= f < len(video_frames)):
+                                continue
+                            bbox = player_detections[f].get(info["player_id"])
+                            ball_bbox = ball_detections[f].get(1)
+                            if bbox is None or ball_bbox is None:
+                                continue
+                            player_bbox = bbox
+                            ball_xy = ((ball_bbox[0] + ball_bbox[2]) / 2.0,
+                                       (ball_bbox[1] + ball_bbox[3]) / 2.0)
+                            landmarks = pose_estimator.detect_in_bbox(video_frames[f], bbox)
+                            result = classify_forehand_backhand(
+                                landmarks, ball_xy,
+                                max_contact_distance=2.0 * (bbox[2] - bbox[0]),
+                            )
+                            if result is not None:
+                                if offset:
+                                    logger.debug(
+                                        f"  Frame {shot_frame}: pose resolved at {f} "
+                                        f"(offset {offset:+d})"
+                                    )
+                                break
+                        if player_bbox is None:
+                            continue
+                        if result is not None:
+                            info["shot_type"] = result[0]
+                            info["pose_confidence"] = round(result[1], 2)
+                            upgraded += 1
+                            logger.debug(f"  Frame {shot_frame}: pose OK -> {result[0]} ({result[1]:.2f})")
                         else:
-                            why = "ambiguous hand or too far from ball"
-                        logger.debug(f"  Frame {shot_frame}: pose FAILED ({why}) -- kept '{info['shot_type']}'")
-                pose_estimator.close()
-                logger.info(
-                    f"  Pose-based forehand/backhand: {upgraded} of "
-                    f"{len(shot_classifications)} shots upgraded "
-                    f"(rest kept position-based - pose unavailable or ambiguous)"
-                )
-            else:
-                logger.info("  Pose model unavailable - keeping position-based labels")
+                            has_shoulders = bool(landmarks) and "LEFT_SHOULDER" in landmarks and "RIGHT_SHOULDER" in landmarks
+                            has_wrist = bool(landmarks) and ("LEFT_WRIST" in landmarks or "RIGHT_WRIST" in landmarks)
+                            if not landmarks:
+                                why = "no pose detected in crop"
+                            elif not has_shoulders:
+                                why = "shoulders missing"
+                            elif not has_wrist:
+                                why = "wrists missing"
+                            else:
+                                why = "ambiguous hand or too far from ball"
+                            logger.debug(f"  Frame {shot_frame}: pose FAILED ({why}) -- kept '{info['shot_type']}'")
+                    pose_estimator.close()
+                    logger.info(
+                        f"  Pose-based forehand/backhand: {upgraded} of "
+                        f"{len(shot_classifications)} shots upgraded "
+                        f"(rest kept position-based - pose unavailable or ambiguous)"
+                    )
+                else:
+                    logger.info("  Pose model unavailable - keeping position-based labels")
 
         # Resolve any remaining Groundstroke labels into Forehand / Backhand using relative X geometry
         net_y = mini_court.court_drawing_height * 0.5
