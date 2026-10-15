@@ -174,6 +174,25 @@ def build_engine_result(
         ],
     }
 
+    # Evaluate rally outcome if available or infer from shot sequence
+    outcome = summary.get("rally_outcome")
+    if not outcome and shot_classifications:
+        from .rally_outcome import determine_rally_outcome
+        shots_seq = []
+        for f in sorted(shot_classifications.keys()):
+            item = shot_classifications[f]
+            pid = hitter_by_frame.get(f) if hitter_by_frame else item.get("player_id", 1)
+            shots_seq.append({
+                "frame": f,
+                "player_id": pid,
+                "shot_type": item.get("shot_type", "Groundstroke"),
+            })
+        outcome = determine_rally_outcome(shots_seq, player_ids=(1, 2)).as_dict()
+
+    if outcome:
+        rally["outcome"] = outcome
+
+
     return {
         "players": players,
         "rallies": [rally],

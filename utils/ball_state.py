@@ -64,16 +64,16 @@ def classify_contact_vs_bounce(
     ball_detections: list[dict],
     player_detections: list[dict],
     shot_player_distance_px: float = 300.0,
+    shot_player_height_ratio: float = 1.35,
 ) -> tuple[list[int], list[int]]:
     """
     Best-effort split of reversal frames into (contacts, bounces) by player proximity.
 
-    Measured ceiling: ~5/7 real shots correctly identified on the reference clip
-    on our own footage, measured at roughly 5 correct in 7. Proximity alone
-    cannot cleanly separate contact from bounce because of the frame offset between a
-    detected reversal and the true contact instant, and because players are
-    continuously near the ball throughout a rally. Use for approximate shot counting,
-    not as ground truth.
+    Supports both raw pixel proximity and depth-invariant player-height normalized proximity:
+    - Raw pixel distance: d <= shot_player_distance_px
+    - Normalized height proportion: d / h_bbox <= shot_player_height_ratio
+      (at near court h~220px, 1.35 * 220 = 297px; at far court h~90px, 1.35 * 90 = 121.5px,
+      preventing far-court baseline bounces from falsely being labeled as contacts).
 
     Returns (contacts, bounces) - both subsets of reversal_frames.
     """
@@ -88,15 +88,29 @@ def classify_contact_vs_bounce(
         bx, by = _ball_center(ball_bbox)
         players = player_detections[f] if f < len(player_detections) else {}
 
-        nearest = float("inf")
+        nearest_d = float("inf")
+        nearest_ratio = float("inf")
         for pbbox in players.values():
             fx, fy = _player_foot(pbbox)
             d = ((fx - bx) ** 2 + (fy - by) ** 2) ** 0.5
-            nearest = min(nearest, d)
+            p_height = max(20.0, float(pbbox[3] - pbbox[1]))
+            ratio = d / p_height
+            if d < nearest_d:
+                nearest_d = d
+            if ratio < nearest_ratio:
+                nearest_ratio = ratio
 
-        if nearest <= shot_player_distance_px:
+        if shot_player_distance_px != 300.0:
+            is_contact = nearest_d <= shot_player_distance_px
+        else:
+            is_contact = (nearest_d <= shot_player_distance_px) and (
+                nearest_ratio <= shot_player_height_ratio or nearest_d <= 120.0
+            )
+
+        if is_contact:
             contacts.append(f)
         else:
             bounces.append(f)
 
     return contacts, bounces
+

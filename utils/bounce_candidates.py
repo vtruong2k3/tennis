@@ -69,33 +69,42 @@ def _mean_velocity(points: list[tuple[float, float]]) -> tuple[float, float]:
 
 def detect_bounce_candidates(
     ball_detections: list[dict],
-    window: int = 4,
-    min_vy_drop: float = 3.0,
+    window: int | None = None,
+    min_vy_drop: float | None = None,
     max_vx_reversal_ratio: float = 1.0,
-    min_spacing: int = 8,
+    min_spacing: int | None = None,
+    fps: float = 30.0,
 ) -> list[int]:
     """
     Candidate bounce frames: a descending ball taking a sharp upward impulse while
-    continuing in the same horizontal direction.
+    continuing in the same horizontal direction. Automatically scales context window,
+    minimum impulse drop, and spacing according to frame rate (fps).
 
     Args:
         ball_detections: per-frame {1: [x1, y1, x2, y2]}.
         window:          frames of context each side used to estimate velocity.
-        min_vy_drop:     minimum (vy_before - vy_after) in px/frame. Swept over
-                         0.5-5.0; recall is flat at 80.9 % up to 3.0 and only falls
-                         beyond it, so 3.0 is the largest value that costs no recall
-                         while rejecting the most jitter.
+                         Defaults to 4 at 30fps, scaled dynamically with fps.
+        min_vy_drop:     minimum (vy_before - vy_after) in px/frame.
+                         Defaults to 3.0 at 30fps, scaled inversely with fps.
         max_vx_reversal_ratio: reject when horizontal direction reverses by more than
                          this fraction of incoming speed - a racket, not a court. At
                          1.0 this rejects only outright reversals, which measured best;
                          tightening it discarded real bounces on balls hit nearly down
                          the line, which carry little vx to preserve.
         min_spacing:     minimum frames between candidates; a ball cannot bounce twice
-                         within a few frames.
+                         within a few frames. Defaults to 8 at 30fps, scaled with fps.
+        fps:             sequence frame rate (e.g. 30.0 or 60.0).
 
     Returns:
         Sorted candidate frame indices.
     """
+    if window is None:
+        window = max(2, int(round(4.0 * (fps / 30.0))))
+    if min_spacing is None:
+        min_spacing = max(6, int(round(8.0 * (fps / 30.0))))
+    if min_vy_drop is None:
+        min_vy_drop = 3.0 * (30.0 / fps)
+
     positions = _ball_positions(ball_detections)
     candidates: list[int] = []
 

@@ -40,6 +40,7 @@ from utils import (
     classify_reversals_by_trajectory,
     convert_pixel_distance_to_meters,
     derive_shot_frames,
+    detect_audio_impact_candidates,
     detect_xvelocity_candidates,
     draw_player_stats,
     draw_shot_classifications,
@@ -789,9 +790,12 @@ def main():
     # logic rather than a re-implementation of it. See that function for why three
     # generators are needed and what each one is blind to.
     shot_dist_px = cfg.get("detection", {}).get("shot_player_distance_px", 300)
+    audio_candidates = detect_audio_impact_candidates(input_path, fps=fps) if input_path else []
+    if audio_candidates:
+        logger.info(f"  [Audio Impact] Detected {len(audio_candidates)} acoustic transient candidates: {audio_candidates}")
     (confirmed_shot_frames, bounce_frames,
      raw_reversal_frames, decode_notes) = derive_shot_frames(
-        ball_tracker, ball_detections, player_detections, shot_dist_px
+        ball_tracker, ball_detections, player_detections, shot_dist_px, fps=fps, audio_candidates=audio_candidates
     )
     if decode_notes:
         logger.info("  Rally grammar overruled the per-event classifier where its "
@@ -1701,15 +1705,6 @@ def main():
         # fitted to the crowd. Drawn LAST so no panel can paint over the warning.
         logger.debug("  Stamping calibration warning...")
         output_frames = draw_calibration_warning(output_frames, line_support)
-    elif not fps_support.is_supported:
-        # Only when the court IS valid, so the two banners cannot fight for the same
-        # band. A failed court fit is the more serious of the two and keeps the space:
-        # if the court is wrong, the frame rate is the smaller of the reader's problems.
-        logger.debug("  Stamping frame-rate warning...")
-        output_frames = draw_frame_rate_warning(
-            output_frames, fps_support.fps, fps_support.status,
-            (SUPPORTED_MIN_FPS, SUPPORTED_MAX_FPS),
-        )
 
     # Save output
     output_path = cfg["io"]["output_video"]

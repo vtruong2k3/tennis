@@ -37,3 +37,7 @@ from .court_validity import (
 )
 from .hawkeye import HawkeyeCall, call_bounce, draw_hawkeye_badge
 from .tactical_metrics import PlayerTacticalProfile, compute_tactical_metrics
+from .audio_impact_detector import AudioImpactDetector, detect_audio_impact_candidates
+from .rally_outcome import RallyOutcome, determine_rally_outcome, WINNER, OUT_ERROR, NET_ERROR
+
+
