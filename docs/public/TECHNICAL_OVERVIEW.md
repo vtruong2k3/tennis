@@ -114,17 +114,18 @@ are the players is the hard part, which is the next stage.
 
 ---
 
-## 4 · Ball tracking `trackers/tracknet_ball_tracker.py`
+## 4 · Ball tracking `trackers/tracknet_v5/` (with TrackNet v2 / v3 fallback)
 
 **What** Locates the ball in each frame, or reports that it could not.
 
 **Why** A tennis ball is a few pixels across, travels up to 200 km/h, motion-blurs into a
 streak and disappears behind players and the net. A single-frame detector fails on it.
 
-**Algorithm** TrackNet v2 - a VGG-style encoder/decoder taking **three consecutive frames
-stacked channel-wise** (9 channels in) and emitting a per-pixel heatmap. The temporal stack
-is the whole idea: a smear that is ambiguous in one frame is obvious as motion across
-three. The heatmap is reduced to a position by taking the centroid of the **largest
+**Algorithm** TrackNetV5 (arXiv:2512.02789) - combines **Motion Direction Decoupling (MDD)**
+polarity decomposition with a **Factorized Spatio-Temporal Transformer (R-STR)** refinement head.
+Takes three consecutive frames, decomposes signed brightness changes into positive (arrival) and negative (departure)
+motion attention maps (forming a 13-channel augmented input), and refines preliminary draft heatmaps with
+coarse-to-fine residual estimation $\Delta$. The heatmap is reduced to a position by taking the centroid of the **largest
 connected component**, not the mean of all responding pixels.
 
 That distinction is worth its own note. When the heatmap responds in two places - the ball

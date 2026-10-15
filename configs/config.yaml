@@ -9,7 +9,8 @@ pipeline:
   shot_classification: true    # Enable shot type classification
   use_homography: true         # Real perspective homography (vs. nearest-keypoint approx)
   use_tracknet: true          # true = TrackNet ball detector; false = YOLO (set true after weights downloaded)
-  use_tracknet_v3: true       # true = TrackNetV3 SOTA pipeline with background estimation & InpaintNet
+  use_tracknet_v5: true       # true = TrackNetV5 SOTA pipeline (MDD polarity + R-STR Transformer refinement)
+  use_tracknet_v3: false      # TrackNetV3 fallback / legacy option
   inpaint_occlusion: true     # Enable InpaintNet 1D ConvNet trajectory rectification for occluded ball frames
   use_pose_shots: true
   use_sam3d_pose: false         # pose-based forehand/backhand (falls back to position rules when pose is unavailable)
@@ -25,6 +26,7 @@ models:
   court: "models/keypoints_model_geoaug.pth"
   tracknet: "models/tracknet.pt"    # download: gdown 1XEYZ4myUN7QT-NeBYJI0xteLsvs-ZAOl -O models/tracknet.pt
   tracknet_v3: "models/tracknet_v3.pt"
+  tracknet_v5: "models/tracknet_v5.pt"
   inpaintnet: "models/inpaintnet.pt"
   # download: curl -L -o models/pose_landmarker_lite.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
   pose: "models/pose_landmarker_lite.task"

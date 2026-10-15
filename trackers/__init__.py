@@ -10,11 +10,13 @@ except ImportError:
 
 from .tracknet_ball_tracker import TrackNetBallTracker
 from .tracknet_v3 import TrackNetV3BallTracker
+from .tracknet_v5 import TrackNetV5BallTracker
 
 __all__ = [
     "PlayerTracker",
     "BallTracker",
     "TrackNetBallTracker",
     "TrackNetV3BallTracker",
+    "TrackNetV5BallTracker",
 ]
 

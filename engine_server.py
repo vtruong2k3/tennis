@@ -485,7 +485,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                             broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking VĐV (YOLO11x)..."})
                         elif "[4/9]" in line:
                             stage = "good"
-                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking quỹ đạo bóng (TrackNetV3)..."})
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking quỹ đạo bóng (TrackNetV5)..."})
                         elif "[5/9]" in line or "[6/9]" in line:
                             stage = "rally"
                             broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Phân loại cú đánh & Hawkeye ELC..."})
@@ -615,7 +615,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking vận động viên (YOLO11x)..."})
                 elif "[4/9]" in line:
                     stage = "good"
-                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking quỹ đạo bóng (TrackNetV3)..."})
+                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking quỹ đạo bóng (TrackNetV5)..."})
                 elif "[5/9]" in line or "[6/9]" in line:
                     stage = "rally"
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Phân loại cú đánh & Hawkeye ELC..."})

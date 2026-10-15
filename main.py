@@ -586,12 +586,21 @@ def main():
 
     # ── 3. Ball detection ──────────────────────────────────────────
     logger.info("[3/9] Ball detection...")
+    use_tracknet_v5 = cfg["pipeline"].get("use_tracknet_v5", False)
     use_tracknet_v3 = cfg["pipeline"].get("use_tracknet_v3", False)
-    use_tracknet = cfg["pipeline"].get("use_tracknet", False) or use_tracknet_v3
+    use_tracknet = cfg["pipeline"].get("use_tracknet", False) or use_tracknet_v5 or use_tracknet_v3
 
     if use_tracknet:
         import pickle
-        if use_tracknet_v3:
+        if use_tracknet_v5:
+            from trackers.tracknet_v5 import TrackNetV5BallTracker
+            ball_tracker = TrackNetV5BallTracker(
+                model_path=cfg["models"].get("tracknet_v5", "models/tracknet_v5.pt"),
+                fallback_model_path=cfg["models"].get("tracknet_v3", cfg["models"].get("tracknet", "models/tracknet.pt")),
+                conf_threshold=cfg["detection"].get("ball_confidence", 0.5),
+            )
+            tracker_desc = "TrackNetV5 (MDD signed polarity + R-STR Transformer refinement)"
+        elif use_tracknet_v3:
             from trackers.tracknet_v3 import TrackNetV3BallTracker
             ball_tracker = TrackNetV3BallTracker(
                 model_path=cfg["models"].get("tracknet_v3", cfg["models"].get("tracknet", "models/tracknet.pt")),

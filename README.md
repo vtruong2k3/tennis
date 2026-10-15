@@ -5,7 +5,7 @@
 
 An evidence-driven tennis computer-vision pipeline from a single broadcast camera.
 
-Players · Ball · TrackNetV3 · Hawkeye ELC · Tactical Telemetry · 3-D Reconstruction · Web Dashboard.
+Players · Ball · TrackNetV5 · Hawkeye ELC · Tactical Telemetry · 3-D Reconstruction · Web Dashboard.
 
 <div align="center">
   <img src="frame_images/tennis_analysis_middle_frame107.png" width="820" alt="Tennis-Vision annotated broadcast frame with court keypoints, tracked players, ball position and shot statistics">

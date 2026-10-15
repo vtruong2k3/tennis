@@ -4,6 +4,7 @@ node_modules/
 # Virtual Environment
 venv/
 .venv/
+.venv
 env/
 
 # Model weights (large files)
