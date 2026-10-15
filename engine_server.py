@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import zipfile
 from datetime import datetime
@@ -43,7 +44,7 @@ from fastapi.responses import (
 from sse_starlette.sse import EventSourceResponse
 
 from utils.match_aggregator import aggregate_match_runs
-from utils.rally_segmenter import segment_video_rallies
+from utils.rally_segmenter import get_ffmpeg_binary, segment_video_rallies
 from utils.web_video import to_browser_playable
 
 # Setup logging
@@ -523,25 +524,28 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                 logger.error(f"Match aggregation failed: {exc}", exc_info=True)
 
             # Ensure web-playable root video.mp4 contains the FULL MATCH video
-            root_web_video = run_dir / "video.mp4"
-            if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                ffmpeg_bin = get_ffmpeg_binary()
-                if ffmpeg_bin:
-                    cmd = [
-                        str(ffmpeg_bin), "-y", "-i", str(video_path),
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                        "-c:a", "copy", str(root_web_video),
-                    ]
-                    try:
-                        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    except Exception as e_vid:
-                        logger.warning(f"Failed to transcode full match video: {e_vid}")
-
+            try:
+                root_web_video = run_dir / "video.mp4"
                 if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                    rally_1_video = rallies_dir / "rally_01" / "video.mp4"
-                    if rally_1_video.exists():
-                        shutil.copy2(rally_1_video, root_web_video)
+                    ffmpeg_bin = get_ffmpeg_binary()
+                    if ffmpeg_bin:
+                        cmd = [
+                            str(ffmpeg_bin), "-y", "-i", str(video_path),
+                            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                            "-c:a", "copy", str(root_web_video),
+                        ]
+                        try:
+                            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                        except Exception as e_vid:
+                            logger.warning(f"Failed to transcode full match video: {e_vid}")
+
+                    if not root_web_video.exists() or root_web_video.stat().st_size == 0:
+                        rally_1_video = rallies_dir / "rally_01" / "video.mp4"
+                        if rally_1_video.exists():
+                            shutil.copy2(rally_1_video, root_web_video)
+            except Exception as e_vid_outer:
+                logger.warning(f"Error preparing root video.mp4: {e_vid_outer}")
 
             meta_path = run_dir / "meta.json"
             meta = {
