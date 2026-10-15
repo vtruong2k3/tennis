@@ -20,6 +20,12 @@ else
     PYTHON_BIN="python3"
 fi
 
+# Clean up any stale processes holding port 5200 or 3000
+echo "Kiểm tra và giải phóng cổng 5200 & 3000..."
+fuser -k 5200/tcp 2>/dev/null || true
+fuser -k 3000/tcp 2>/dev/null || true
+sleep 0.5
+
 # 1. Start Engine Server (Port 5200) in background
 PORT=5200 $PYTHON_BIN engine_server.py &
 BACKEND_PID=$!
