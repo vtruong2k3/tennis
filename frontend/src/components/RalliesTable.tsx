@@ -4,7 +4,7 @@ import { Table, Download, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-re
 
 interface RalliesTableProps {
   rallies: RallyTelemetry[];
-  selectedRally: RallyTelemetry;
+  selectedRally?: RallyTelemetry;
   onSelectRally: (rally: RallyTelemetry) => void;
   onOpenExport: () => void;
 }
@@ -117,13 +117,20 @@ export const RalliesTable: React.FC<RalliesTableProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {displayedRows.map((rally) => {
-              const isSelected = selectedRally.id === rally.id;
-              const isPeakRow = rally.isRecord || rally.id === '#13';
+            {displayedRows.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="text-center py-8 text-[#94a3b8] font-mono text-xs">
+                  Chưa có pha bóng nào được ghi nhận cho lượt phân tích này.
+                </td>
+              </tr>
+            ) : (
+              displayedRows.map((rally) => {
+                const isSelected = selectedRally?.id === rally.id;
+                const isPeakRow = rally.isRecord || rally.id === '#13';
 
-              return (
-                <tr
-                  key={rally.id}
+                return (
+                  <tr
+                    key={rally.id}
                   onClick={() => onSelectRally(rally)}
                   className={`cursor-pointer transition-colors duration-150 ${
                     isPeakRow
@@ -225,7 +232,7 @@ export const RalliesTable: React.FC<RalliesTableProps> = ({
                   </td>
                 </tr>
               );
-            })}
+            }))}
           </tbody>
         </table>
       </div>

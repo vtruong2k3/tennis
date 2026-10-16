@@ -1,4 +1,4 @@
- import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Play,
   Pause,
@@ -7,10 +7,15 @@ import {
   Maximize2,
   Film,
   Sparkles,
+  Plus,
+  Trash2,
+  Check,
+  X,
 } from 'lucide-react';
 import { ArVideoLayer } from './ArVideoLayer';
 import { useTelemetry } from '../api/TelemetryContext';
 import { RallyTelemetry } from '../types/telemetry';
+import { fetchArData, correctShot, ArTrailPoint } from '../api/engine';
 
 interface HighlightItem {
   startMs: number;
@@ -38,8 +43,16 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
   selectedRally,
   onSelectRally,
 }) => {
-  const { runId, runs, rallies: RALLIES_DATA } = useTelemetry();
+  const { runId, runs, rallies: RALLIES_DATA, reload } = useTelemetry();
   const [selectedRallyIndex, setSelectedRallyIndex] = useState<number | null>(null);
+  const [arShots, setArShots] = useState<ArTrailPoint[]>([]);
+  const [activeShot, setActiveShot] = useState<ArTrailPoint | null>(null);
+  const [editingShotType, setEditingShotType] = useState<string>('Forehand');
+  const [editingPlayerId, setEditingPlayerId] = useState<number>(1);
+  const [showAddShotModal, setShowAddShotModal] = useState<boolean>(false);
+  const [newShotType, setNewShotType] = useState<string>('Forehand');
+  const [newShotPlayerId, setNewShotPlayerId] = useState<number>(1);
+  const [correcting, setCorrecting] = useState<boolean>(false);
 
   const videoUrl = useMemo(() => {
     if (!runId) return '';
@@ -76,12 +89,17 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
   const highlights: HighlightItem[] = useMemo(() => {
     const toSec = (ms: number) => ms / 1000;
     const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 100).toString().padStart(2, '0')}`;
-    const peak = RALLIES_DATA.reduce((m, r) => (r.maxSpeed > m.maxSpeed ? r : m), RALLIES_DATA[0]);
-    const longest = RALLIES_DATA.reduce((m, r) => (r.shotsCount > m.shotsCount ? r : m), RALLIES_DATA[0]);
-    const bestServe = RALLIES_DATA.filter((r) => r.serveSpeed > 0).reduce(
-      (m, r) => (r.serveSpeed > m.serveSpeed ? r : m),
-      RALLIES_DATA.find((r) => r.serveSpeed > 0) ?? RALLIES_DATA[0]
-    );
+    if (!RALLIES_DATA || RALLIES_DATA.length === 0) return [];
+    const peak = RALLIES_DATA.length > 0
+      ? RALLIES_DATA.reduce((m, r) => (r.maxSpeed > m.maxSpeed ? r : m), RALLIES_DATA[0])
+      : undefined;
+    const longest = RALLIES_DATA.length > 0
+      ? RALLIES_DATA.reduce((m, r) => (r.shotsCount > m.shotsCount ? r : m), RALLIES_DATA[0])
+      : undefined;
+    const serveRallies = RALLIES_DATA.filter((r) => r.serveSpeed > 0);
+    const bestServe = serveRallies.length > 0
+      ? serveRallies.reduce((m, r) => (r.serveSpeed > m.serveSpeed ? r : m), serveRallies[0])
+      : undefined;
     const list: HighlightItem[] = [];
     const seen = new Set<string>();
     const push = (r: RallyTelemetry, badge: string, color: string, title: string) => {
@@ -125,7 +143,7 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
   }, [highlights]);
 
   const currentHighlight = highlights.find((h) => h.id === selectedHighlightId) || highlights[0];
-  const DURATION_SEC = videoDuration || RALLIES_DATA.reduce((m, r) => Math.max(m, (r.endMs ?? 0) / 1000), 0) || 1;
+  const DURATION_SEC = videoDuration || (RALLIES_DATA.length > 0 ? RALLIES_DATA.reduce((m, r) => Math.max(m, (r.endMs ?? 0) / 1000), 0) : 0) || 1;
 
   // Filtered highlights (dữ liệu thật)
   const filteredHighlights = highlights.filter((item) => {
@@ -202,6 +220,102 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
     }
   }, [selectedRally, seekTo]);
 
+  // Nạp dữ liệu các cú đánh AR thật từ run hiện tại
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    fetchArData(runId, selectedRallyIndex ?? undefined)
+      .then((data) => {
+        if (!cancelled && data.ball?.shots) {
+          setArShots(data.ball.shots);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setArShots([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, selectedRallyIndex]);
+
+  const handleSaveCorrection = async () => {
+    if (!runId || !activeShot) return;
+    setCorrecting(true);
+    try {
+      const frame = activeShot.frame ?? Math.round((activeShot.t / 1000) * 25);
+      await correctShot(runId, {
+        rally_index: selectedRallyIndex ?? 0,
+        action: 'update',
+        frame,
+        shot_type: editingShotType,
+        player_id: editingPlayerId,
+      });
+      setArShots((prev) =>
+        prev.map((s) =>
+          s.t === activeShot.t ? { ...s, shot_type: editingShotType, player: editingPlayerId } : s
+        )
+      );
+      setActiveShot(null);
+      reload();
+    } catch (e) {
+      console.error('Failed to correct shot:', e);
+    } finally {
+      setCorrecting(false);
+    }
+  };
+
+  const handleDeleteShot = async () => {
+    if (!runId || !activeShot) return;
+    setCorrecting(true);
+    try {
+      const frame = activeShot.frame ?? Math.round((activeShot.t / 1000) * 25);
+      await correctShot(runId, {
+        rally_index: selectedRallyIndex ?? 0,
+        action: 'delete',
+        frame,
+        shot_type: activeShot.shot_type || 'Forehand',
+        player_id: activeShot.player || 1,
+      });
+      setArShots((prev) => prev.filter((s) => s.t !== activeShot.t));
+      setActiveShot(null);
+      reload();
+    } catch (e) {
+      console.error('Failed to delete shot:', e);
+    } finally {
+      setCorrecting(false);
+    }
+  };
+
+  const handleAddNewShot = async () => {
+    if (!runId) return;
+    setCorrecting(true);
+    try {
+      const t = Math.round(currentTimeSec * 1000);
+      const frame = Math.round(currentTimeSec * 25);
+      await correctShot(runId, {
+        rally_index: selectedRallyIndex ?? 0,
+        action: 'add',
+        frame,
+        shot_type: newShotType,
+        player_id: newShotPlayerId,
+      });
+      const newPt: ArTrailPoint = {
+        t,
+        u: 0.5,
+        v: 0.5,
+        frame,
+        shot_type: newShotType,
+        player: newShotPlayerId,
+      };
+      setArShots((prev) => [...prev, newPt].sort((a, b) => a.t - b.t));
+      setShowAddShotModal(false);
+      reload();
+    } catch (e) {
+      console.error('Failed to add shot:', e);
+    } finally {
+      setCorrecting(false);
+    }
+  };
 
   return (
     <div className="bg-[#0e1320] border border-white/10 rounded-xl p-4 lg:p-6 shadow-2xl relative">
@@ -327,60 +441,259 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
             )}
           </div>
 
-          {/* Scrubber Timeline & Rally Intensity Waveform */}
-          <div className="bg-[#0b101c] rounded-lg p-3 border border-white/10 space-y-2">
-            <div className="flex items-center justify-between text-[11px] font-mono">
-              <span className="text-[#8f9bb3] font-semibold">
-                Scrubber Timeline (Rally Intensity Waveform)
-              </span>
-              <div className="flex items-center gap-3">
+          {/* Scrubber Timeline & Interactive Shot Markers */}
+          <div className="bg-[#0b101c] rounded-lg p-3 border border-white/10 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between text-[11px] font-mono gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[#8f9bb3] font-semibold">
+                  Timeline Cú Đánh (Interactive Shot Markers)
+                </span>
+                {arShots.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-[#caf300]/15 border border-[#caf300]/40 text-[#caf300] font-bold text-[10px]">
+                    {arShots.length} cú đánh
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3 text-[10px]">
+                <span className="flex items-center gap-1 text-[#ffd700]">
+                  <span className="w-2 h-2 rounded-full bg-[#ffd700] shadow-[0_0_6px_#ffd700]"></span>
+                  Giao Bóng (Serve)
+                </span>
                 <span className="flex items-center gap-1 text-[#caf300]">
-                  <span className="w-2 h-2 rounded-full bg-[#caf300]"></span>
-                  Rally #13 (Peak)
+                  <span className="w-2 h-2 rounded-full bg-[#caf300] shadow-[0_0_6px_#caf300]"></span>
+                  Thuận Tay (FH)
                 </span>
                 <span className="flex items-center gap-1 text-[#4cd7f6]">
-                  <span className="w-2 h-2 rounded-full bg-[#4cd7f6]"></span>
-                  Rally #02 (Ace)
+                  <span className="w-2 h-2 rounded-full bg-[#4cd7f6] shadow-[0_0_6px_#4cd7f6]"></span>
+                  Trái Tay (BH)
                 </span>
               </div>
             </div>
 
-            {/* Audio Waveform / Segmented Bars */}
+            {/* Human-in-the-loop: Edit Active Shot Card */}
+            {activeShot && (
+              <div className="bg-[#121927] border border-[#caf300]/50 rounded-lg p-2.5 shadow-xl flex flex-wrap items-center justify-between gap-2.5 transition-all">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-[#caf300] animate-pulse"></span>
+                  <span className="text-white text-xs font-bold font-mono">
+                    Sửa Cú Đánh {(activeShot.t / 1000).toFixed(2)}s (F{activeShot.frame ?? Math.round((activeShot.t / 1000) * 25)})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  {/* Player Toggle */}
+                  <div className="flex items-center gap-1 bg-[#0b101c] px-2 py-0.5 rounded border border-white/10">
+                    <span className="text-[#8f9bb3] text-[10px]">VĐV:</span>
+                    <button
+                      onClick={() => setEditingPlayerId(1)}
+                      className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        editingPlayerId === 1 ? 'bg-[#caf300] text-black' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      P1
+                    </button>
+                    <button
+                      onClick={() => setEditingPlayerId(2)}
+                      className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        editingPlayerId === 2 ? 'bg-[#4cd7f6] text-black' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      P2
+                    </button>
+                  </div>
+
+                  {/* Shot Type Buttons */}
+                  <div className="flex items-center gap-1 bg-[#0b101c] px-2 py-0.5 rounded border border-white/10">
+                    <span className="text-[#8f9bb3] text-[10px]">Loại:</span>
+                    {['Serve', 'Forehand', 'Backhand', 'Volley', 'Smash'].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setEditingShotType(st)}
+                        className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold transition-all ${
+                          editingShotType.toLowerCase() === st.toLowerCase()
+                            ? 'bg-white text-black shadow'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleSaveCorrection}
+                    disabled={correcting}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#caf300] hover:bg-[#d8ff14] text-black text-xs font-bold transition-all disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Lưu</span>
+                  </button>
+
+                  <button
+                    onClick={handleDeleteShot}
+                    disabled={correcting}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-red-950/80 hover:bg-red-900 border border-red-500/50 text-red-300 text-xs font-bold transition-all disabled:opacity-50"
+                    title="Xoá cú đánh này"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xoá</span>
+                  </button>
+
+                  <button
+                    onClick={() => setActiveShot(null)}
+                    className="p-1 rounded text-gray-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Human-in-the-loop: Add New Shot Card */}
+            {showAddShotModal && (
+              <div className="bg-[#121927] border border-[#4cd7f6]/50 rounded-lg p-2.5 shadow-xl flex flex-wrap items-center justify-between gap-2.5 transition-all">
+                <div className="flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-[#4cd7f6]" />
+                  <span className="text-white text-xs font-bold font-mono">
+                    Thêm Cú Đánh Mới Tại {(currentTimeSec).toFixed(2)}s (F{Math.round(currentTimeSec * 25)})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  <div className="flex items-center gap-1 bg-[#0b101c] px-2 py-0.5 rounded border border-white/10">
+                    <span className="text-[#8f9bb3] text-[10px]">VĐV:</span>
+                    <button
+                      onClick={() => setNewShotPlayerId(1)}
+                      className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        newShotPlayerId === 1 ? 'bg-[#caf300] text-black' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      P1
+                    </button>
+                    <button
+                      onClick={() => setNewShotPlayerId(2)}
+                      className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        newShotPlayerId === 2 ? 'bg-[#4cd7f6] text-black' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      P2
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1 bg-[#0b101c] px-2 py-0.5 rounded border border-white/10">
+                    <span className="text-[#8f9bb3] text-[10px]">Loại:</span>
+                    {['Serve', 'Forehand', 'Backhand', 'Volley', 'Smash'].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setNewShotType(st)}
+                        className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold transition-all ${
+                          newShotType.toLowerCase() === st.toLowerCase()
+                            ? 'bg-[#4cd7f6] text-black font-bold shadow'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleAddNewShot}
+                    disabled={correcting}
+                    className="flex items-center gap-1 px-3 py-1 rounded bg-[#4cd7f6] hover:bg-[#38bdf8] text-black text-xs font-bold transition-all disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Xác Nhận Thêm</span>
+                  </button>
+
+                  <button
+                    onClick={() => setShowAddShotModal(false)}
+                    className="p-1 rounded text-gray-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Audio Waveform / Segmented Bars + Interactive Markers Overlay */}
             <div
-              className="h-10 bg-[#070b13] rounded border border-white/5 relative flex items-end px-2 gap-1 overflow-hidden cursor-pointer"
+              className="h-11 bg-[#070b13] rounded border border-white/10 relative flex items-end px-2 gap-1 overflow-visible cursor-pointer select-none"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const clickX = e.clientX - rect.left;
-                const ratio = clickX / rect.width;
+                const ratio = Math.max(0, Math.min(1, clickX / rect.width));
                 seekTo(ratio * DURATION_SEC);
               }}
             >
               {/* Synthetic waveform vertical bars */}
               {Array.from({ length: 48 }).map((_, i) => {
-                // Peak around i = 32 (18 min mark)
                 const isPeakZone = i >= 30 && i <= 34;
                 const heightPct = isPeakZone ? 92 : ((Math.sin(i * 0.7) + 1.2) / 2.2) * 60 + 15;
                 return (
                   <div
                     key={i}
-                    className={`flex-1 rounded-t-sm transition-all ${
+                    className={`flex-1 rounded-t-sm transition-all pointer-events-none ${
                       isPeakZone
-                        ? 'bg-[#caf300] shadow-[0_0_8px_#caf300]'
+                        ? 'bg-[#caf300]/60'
                         : i % 4 === 0
-                        ? 'bg-[#4cd7f6]/70'
-                        : 'bg-[#94a3b8]/40'
+                        ? 'bg-[#4cd7f6]/40'
+                        : 'bg-[#94a3b8]/20'
                     }`}
                     style={{ height: `${heightPct}%` }}
                   ></div>
                 );
               })}
 
-              {/* Yellow Scrubber Needle / Playhead at 18:02 */}
+              {/* Clickable Shot Markers */}
+              {arShots.map((shot, idx) => {
+                const shotSec = shot.t / 1000;
+                const pct = Math.max(0, Math.min(100, (shotSec / DURATION_SEC) * 100));
+                const sType = (shot.shot_type || '').toLowerCase();
+                const isServe = sType.includes('serve');
+                const isBackhand = sType.includes('backhand');
+                const isForehand = sType.includes('forehand');
+                const color = isServe ? '#ffd700' : isBackhand ? '#4cd7f6' : isForehand ? '#caf300' : '#f59e0b';
+                const label = isServe ? 'S' : isBackhand ? 'BH' : isForehand ? 'FH' : '•';
+                const isCurrentActive = activeShot?.t === shot.t;
+
+                return (
+                  <button
+                    key={`${shot.t}-${idx}`}
+                    style={{ left: `${pct}%` }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      seekTo(shotSec);
+                      setActiveShot(shot);
+                      setEditingShotType(shot.shot_type || 'Forehand');
+                      setEditingPlayerId(shot.player || 1);
+                    }}
+                    className={`absolute top-0 bottom-0 -translate-x-1/2 z-20 flex flex-col items-center justify-between group focus:outline-none py-0.5 ${
+                      isCurrentActive ? 'scale-110 z-30' : ''
+                    }`}
+                    title={`Cú #${idx + 1}: ${shot.shot_type || 'Cú đánh'} (P${shot.player || 1}) tại ${shotSec.toFixed(2)}s - Click để sửa/xoá`}
+                  >
+                    <span
+                      className="text-[9px] font-extrabold font-mono px-1 rounded shadow-md transition-transform group-hover:scale-125 border border-black/40"
+                      style={{ backgroundColor: color, color: '#000000', boxShadow: `0 0 8px ${color}` }}
+                    >
+                      {label}
+                    </span>
+                    <span className="w-0.5 h-full opacity-80 group-hover:w-1 transition-all" style={{ backgroundColor: color }} />
+                    <span
+                      className="w-2 h-2 rounded-full border border-black transition-transform group-hover:scale-125"
+                      style={{ backgroundColor: color }}
+                    />
+                  </button>
+                );
+              })}
+
+              {/* Yellow Scrubber Needle / Playhead */}
               <div
-                className="absolute top-0 bottom-0 w-0.5 bg-[#caf300] shadow-[0_0_10px_#caf300] pointer-events-none"
+                className="absolute top-0 bottom-0 w-0.5 bg-[#caf300] shadow-[0_0_12px_#caf300] pointer-events-none z-30"
                 style={{ left: `${Math.min(100, (currentTimeSec / DURATION_SEC) * 100)}%` }}
               >
-                <span className="absolute -top-1 -translate-x-1/2 bg-[#caf300] text-black text-[9px] font-mono font-bold px-1 rounded shadow">
+                <span className="absolute -top-2 -translate-x-1/2 bg-[#caf300] text-black text-[9px] font-mono font-bold px-1.5 py-0.5 rounded shadow-lg border border-black/20">
                   {Math.floor(currentTimeSec / 60)}:
                   {Math.floor(currentTimeSec % 60)
                     .toString()
@@ -434,6 +747,16 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
                   </button>
                 ))}
               </div>
+
+              {/* Add Shot Button (Human-in-the-loop) */}
+              <button
+                onClick={() => setShowAddShotModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#162032] hover:bg-[#caf300]/20 text-[#dfe2f1] hover:text-[#caf300] border border-white/10 hover:border-[#caf300]/50 text-xs font-mono font-semibold transition-all shadow-sm"
+                title="Dừng video tại frame tiếp xúc và gắn nhãn cú đánh bị sót"
+              >
+                <Plus className="w-3.5 h-3.5 text-[#caf300]" />
+                <span>+ Thêm Cú Đánh ({(currentTimeSec).toFixed(1)}s)</span>
+              </button>
 
               {/* AR Filters Switchers */}
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -517,7 +840,7 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
               Video Highlights
             </h3>
             <span className="bg-[#caf300] text-black text-[9px] font-mono font-black px-2 py-0.5 rounded uppercase">
-              6 PHA BÓNG
+              {filteredHighlights.length} PHA BÓNG
             </span>
           </div>
 
@@ -567,7 +890,12 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
 
           {/* Highlights List */}
           <div className="space-y-2.5 overflow-y-auto max-h-[460px] pr-1">
-            {filteredHighlights.map((item) => {
+            {filteredHighlights.length === 0 ? (
+              <div className="text-center py-8 text-[#8f9bb3] text-xs font-mono">
+                Chưa có pha bóng highlight nào trong lượt chạy này.
+              </div>
+            ) : (
+              filteredHighlights.map((item) => {
               const isSelected = selectedHighlightId === item.id;
               return (
                 <div
@@ -625,7 +953,8 @@ export const VideoHudPlayer: React.FC<VideoHudPlayerProps> = ({
                   </div>
                 </div>
               );
-            })}
+            })
+            )}
           </div>
         </div>
       </div>

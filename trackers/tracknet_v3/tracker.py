@@ -123,12 +123,19 @@ class TrackNetV3BallTracker:
         model_out: np.ndarray,
         orig_h: int,
         orig_w: int,
+        min_y_ratio: float = 0.14,
     ) -> list[float] | None:
         """
         Centroid of LARGEST connected heatmap response (Tennis-Vision LCC algorithm).
+        Rejects candidates in stadium billboards / grandstands ceiling (y/H < min_y_ratio).
         """
         intensity = model_out.reshape((self.INPUT_HEIGHT, self.INPUT_WIDTH))
         mask = (intensity > 0.5).astype(np.uint8) if intensity.dtype == np.float32 else (intensity != 0).astype(np.uint8)
+
+        # Mask out stadium billboard ceiling (top min_y_ratio of frame)
+        ceiling_h = int(self.INPUT_HEIGHT * min_y_ratio)
+        if ceiling_h > 0:
+            mask[:ceiling_h, :] = 0
 
         if int(mask.sum()) < 5:
             return None
@@ -137,12 +144,23 @@ class TrackNetV3BallTracker:
         if n_labels <= 1:
             return None
 
-        # Label 0 is background; column 4 is area
-        largest = 1 + int(np.argmax(stats[1:, 4]))
-        if int(stats[largest, 4]) < 5:
+        # Filter candidate components by area and ceiling bounds
+        valid_candidates = []
+        for lbl in range(1, n_labels):
+            area = int(stats[lbl, 4])
+            if area < 5:
+                continue
+            cx_in, cy_in = centroids[lbl]
+            if (cy_in / self.INPUT_HEIGHT) < min_y_ratio:
+                continue
+            valid_candidates.append((area, cx_in, cy_in))
+
+        if not valid_candidates:
             return None
 
-        cx_in, cy_in = centroids[largest]
+        valid_candidates.sort(key=lambda x: x[0], reverse=True)
+        _, cx_in, cy_in = valid_candidates[0]
+
         cx = int(cx_in * orig_w / self.INPUT_WIDTH)
         cy = int(cy_in * orig_h / self.INPUT_HEIGHT)
         half = 12
@@ -275,27 +293,74 @@ class TrackNetV3BallTracker:
         self,
         detections: list[dict],
         smooth_window: int = 3,
+        max_gap_frames: int = 4,
+        max_jump_px: float = 140.0,
     ) -> list[dict]:
         """
-        Interpolates missing gaps and smooths trajectories using rolling median.
+        Interpolates missing gaps up to max_gap_frames and smooths trajectories using rolling median.
+        Enforces maximum physical displacement per frame to reject teleporting false positives.
+        Unseen frames outside the interpolation limit remain empty dicts ({}).
         """
+        if not detections:
+            return []
+
+        # 1. Filter out teleporting single-frame false positives (velocity sanity gate)
+        cleaned_detections = []
+        last_valid_pos = None
+        last_valid_idx = None
+
+        for i, d in enumerate(detections):
+            bbox = d.get(1)
+            if bbox is None:
+                cleaned_detections.append({})
+                continue
+
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+
+            if last_valid_pos is not None:
+                gap = i - last_valid_idx
+                if gap <= 5:
+                    dist = float(np.hypot(cx - last_valid_pos[0], cy - last_valid_pos[1]))
+                    if dist > gap * max_jump_px:
+                        cleaned_detections.append({})
+                        continue
+
+            last_valid_pos = (cx, cy)
+            last_valid_idx = i
+            cleaned_detections.append({1: bbox})
+
+        # 2. Linear interpolation bounded by max_gap_frames (NO global bfill/ffill)
         rows = [
             {"frame": i, "x": (d[1][0] + d[1][2]) / 2.0, "y": (d[1][1] + d[1][3]) / 2.0}
             if d.get(1) else {"frame": i, "x": np.nan, "y": np.nan}
-            for i, d in enumerate(detections)
+            for i, d in enumerate(cleaned_detections)
         ]
         df = pd.DataFrame(rows).set_index("frame")
-        df[["x", "y"]] = df[["x", "y"]].interpolate(method="linear").bfill().ffill()
+        is_nan = df["x"].isna()
+        group = (~is_nan).cumsum()
+        run_len = is_nan.groupby(group).transform("sum")
+
+        interp_df = df[["x", "y"]].interpolate(method="linear", limit_area="inside")
+        df[["x", "y"]] = interp_df.mask(is_nan & (run_len > max_gap_frames))
 
         if smooth_window > 1:
             df["x"] = df["x"].rolling(smooth_window, center=True, min_periods=1).median()
             df["y"] = df["y"].rolling(smooth_window, center=True, min_periods=1).median()
 
         half = 12
-        return [
-            {1: [cx - half, cy - half, cx + half, cy + half]}
-            for cx, cy in ((float(r["x"]), float(r["y"])) for _, r in df.iterrows())
-        ]
+        output: list[dict] = []
+        for _, r in df.iterrows():
+            x_val = r["x"]
+            y_val = r["y"]
+            if pd.isna(x_val) or pd.isna(y_val):
+                output.append({})
+            else:
+                cx = float(x_val)
+                cy = float(y_val)
+                output.append({1: [cx - half, cy - half, cx + half, cy + half]})
+
+        return output
 
     def get_ball_shot_frames(
         self,

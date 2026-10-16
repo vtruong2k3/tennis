@@ -94,10 +94,16 @@ class PlayerTracker:
             longest = sorted(totals.items(), key=lambda kv: kv[1]['frames'], reverse=True)
             return [track_id for track_id, _ in longest[:2]]
 
+        def rank_key(c):
+            # Weight mean score by persistence square root so persistent player tracks
+            # are chosen over short fragments or brief passers-by
+            persistence_factor = (c['frames'] / max(len(player_detections), 1)) ** 0.5
+            return c['score'] * persistence_factor
+
         bottom = sorted([c for c in candidates if c['is_bottom_half']],
-                        key=lambda c: c['score'], reverse=True)
+                        key=rank_key, reverse=True)
         top    = sorted([c for c in candidates if not c['is_bottom_half']],
-                        key=lambda c: c['score'], reverse=True)
+                        key=rank_key, reverse=True)
 
         chosen = [group[0] for group in (bottom, top) if group]
         for c, label in zip(chosen, ("BOTTOM" if bottom else "TOP", "TOP")):

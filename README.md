@@ -507,7 +507,7 @@ on for repeated runs against the same clip.
 
 ### Test suite
 
-**433 unit and integration tests** (`pytest tests/`), covering ball-state classification,
+**482 unit and integration tests** (`pytest tests/`), covering ball-state classification,
 Kalman and RTS smoothing including the physical speed-plausibility gate, mini-court
 coordinate mapping, trajectory drawing, pose-based shot classification, the hit and bounce
 classifier and its feature contract, the rally grammar and its decoder, the no-ground-truth
@@ -838,8 +838,8 @@ Ordered by measured value, not by interest.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/                                       # 433 tests, needs the weights
-pytest tests/ -m "not slow"                         # 411, what CI runs, no weights
+pytest tests/                                       # 482 tests, needs the weights
+pytest tests/ -m "not slow"                         # 459, what CI runs, no weights
 
 python eval/shot_frame_accuracy.py                  # reference clip, ships with repo
 python eval/speed_accuracy.py                       # reference clip, ships with repo
@@ -869,7 +869,7 @@ models/               small trained weights (committed); large weights fetched b
 notes/                CV concept write-ups
 scripts/              download_models.py, build_clip_suite.py, public media tooling
 docs/public/media/    3-D preview, self-contained viewer and static viewer screenshot
-tests/                433 unit and integration tests
+tests/                482 unit and integration tests
 tools/                label_shots.py, keyboard-driven contact and bounce labelling
 trackers/             tracknet_ball_tracker.py, player_tracker.py
 training/             court keypoint and shot classifier training
@@ -899,8 +899,8 @@ Written while building, in `notes/`:
 
 ## Credits
 
-- **TrackNet** ([yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet)), ball
-  detection weights and the labelled dataset behind every event-detection number here
+- **TrackNet / TrackNetV5** ([TrackNet](https://github.com/yastrebksv/TrackNet), [TrackNetV5-SDK](https://github.com/thaonan/TrackNetV5-SDK)), ball
+  detection weights and trajectory refinement
 - **TennisCourtDetector**, the court keypoint dataset behind the fine-tuned model
 - **Ultralytics YOLO11**, player detection
 - **MediaPipe**, pose estimation

@@ -66,6 +66,9 @@ export interface ArTrailPoint {
   t: number;
   u: number;
   v: number;
+  frame?: number;
+  shot_type?: string;
+  player?: number;
 }
 
 export interface ArCourtKeyframe {
@@ -107,4 +110,23 @@ export async function fetchArData(runId: string, rallyId?: number): Promise<ArDa
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Không tải được dữ liệu AR (HTTP ${res.status})`);
   return (await res.json()) as ArData;
+}
+
+export interface ShotCorrectionPayload {
+  rally_index?: number;
+  action: 'update' | 'add' | 'delete';
+  frame: number;
+  shot_type: string;
+  player_id: number;
+  shot_speed_kmh?: number;
+}
+
+export async function correctShot(runId: string, payload: ShotCorrectionPayload): Promise<any> {
+  const res = await fetch(`/internal/v1/test/runs/${encodeURIComponent(runId)}/shots/correct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`correctShot: HTTP ${res.status}`);
+  return await res.json();
 }

@@ -99,13 +99,17 @@ export function mapTelemetry(result: EngineResult, runId: string): MappedTelemet
     };
   });
 
+  const MIN_RECORD_SHOTS = 6;
   const recordShots = rallies.reduce((m, r) => Math.max(m, r.shotsCount), 0);
-  rallies.forEach((r) => {
-    if (r.shotsCount === recordShots) {
-      r.isRecord = true;
-      r.highlight = true;
+  if (recordShots >= MIN_RECORD_SHOTS) {
+    // Only highlight the single true peak rally by longest duration
+    const peakRallies = rallies.filter((r) => r.shotsCount === recordShots);
+    peakRallies.sort((a, b) => b.durationSeconds - a.durationSeconds);
+    if (peakRallies.length > 0) {
+      peakRallies[0].isRecord = true;
+      peakRallies[0].highlight = true;
     }
-  });
+  }
 
   // ----- Players -----
   const players: PlayerStats[] = (result.players ?? []).slice(0, 2).map((p, i) => {

@@ -33,6 +33,7 @@ from typing import Any, AsyncGenerator
 import cv2
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -43,7 +44,7 @@ from fastapi.responses import (
 from sse_starlette.sse import EventSourceResponse
 
 from utils.match_aggregator import aggregate_match_runs
-from utils.rally_segmenter import segment_video_rallies
+from utils.rally_segmenter import get_ffmpeg_binary, segment_video_rallies
 from utils.web_video import to_browser_playable
 
 # Setup logging
@@ -485,7 +486,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                             broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking VĐV (YOLO11x)..."})
                         elif "[4/9]" in line:
                             stage = "good"
-                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking quỹ đạo bóng (TrackNetV3)..."})
+                            broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Tracking quỹ đạo bóng (TrackNetV5)..."})
                         elif "[5/9]" in line or "[6/9]" in line:
                             stage = "rally"
                             broadcast_event(run_id, {"type": "stage", "stage": stage, "message": f"[Pha {idx}/{len(rally_segments)}] Phân loại cú đánh & Hawkeye ELC..."})
@@ -525,23 +526,35 @@ async def run_pipeline_worker(run_id: str, video_path: str):
             # Ensure web-playable root video.mp4 contains the FULL MATCH video
             root_web_video = run_dir / "video.mp4"
             if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                ffmpeg_bin = get_ffmpeg_binary()
-                if ffmpeg_bin:
-                    cmd = [
-                        str(ffmpeg_bin), "-y", "-i", str(video_path),
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                        "-c:a", "copy", str(root_web_video),
-                    ]
-                    try:
-                        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    except Exception as e_vid:
-                        logger.warning(f"Failed to transcode full match video: {e_vid}")
+                try:
+                    ffmpeg_bin = get_ffmpeg_binary()
+                    if ffmpeg_bin:
+                        # 1. Thử stream-copy với +faststart trước (chỉ mất ~0.3s cho file MP4, giữ nguyên 100% thời lượng và chất lượng)
+                        cmd_copy = [
+                            str(ffmpeg_bin), "-nostdin", "-y", "-i", str(video_path),
+                            "-c", "copy", "-movflags", "+faststart", str(root_web_video),
+                        ]
+                        res = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=30)
+                        if res.returncode != 0 or not root_web_video.exists() or root_web_video.stat().st_size == 0:
+                            # 2. Transcode ultrafast nếu stream-copy thất bại (do định dạng video lạ hoặc codec không chuẩn web)
+                            cmd_trans = [
+                                str(ffmpeg_bin), "-nostdin", "-y", "-i", str(video_path),
+                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                                "-c:a", "copy", str(root_web_video),
+                            ]
+                            subprocess.run(cmd_trans, capture_output=True, text=True, timeout=300)
+                except Exception as e_vid:
+                    logger.warning(f"Failed to copy/transcode full match video: {e_vid}")
 
+                # 3. Fallback: Luôn ưu tiên copy video gốc toàn trận thay vì rally đơn
                 if not root_web_video.exists() or root_web_video.stat().st_size == 0:
-                    rally_1_video = rallies_dir / "rally_01" / "video.mp4"
-                    if rally_1_video.exists():
-                        shutil.copy2(rally_1_video, root_web_video)
+                    if Path(video_path).exists() and Path(video_path).stat().st_size > 0:
+                        shutil.copy2(video_path, root_web_video)
+                    else:
+                        rally_1_video = rallies_dir / "rally_01" / "video.mp4"
+                        if rally_1_video.exists():
+                            shutil.copy2(rally_1_video, root_web_video)
 
             meta_path = run_dir / "meta.json"
             meta = {
@@ -615,7 +628,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking vận động viên (YOLO11x)..."})
                 elif "[4/9]" in line:
                     stage = "good"
-                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking quỹ đạo bóng (TrackNetV3)..."})
+                    broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Tracking quỹ đạo bóng (TrackNetV5)..."})
                 elif "[5/9]" in line or "[6/9]" in line:
                     stage = "rally"
                     broadcast_event(run_id, {"type": "stage", "stage": stage, "message": "Phân loại cú đánh & Hawkeye ELC..."})
@@ -682,7 +695,11 @@ async def run_pipeline_worker(run_id: str, video_path: str):
             "status": "CANCELLED",
             "message": "Đã hủy phân tích",
         })
+    except Exception as exc:
         logger.exception(f"Unexpected error in run {run_id}: {exc}")
+        meta_path = run_dir / "meta.json"
+        meta = {"status": "FAILED", "error": str(exc)}
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         broadcast_event(run_id, {
             "type": "done",
             "status": "FAILED",
@@ -803,7 +820,97 @@ async def cancel_run(run_id: str):
         meta = {"status": "CANCELLED"}
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    return {"status": "CANCELLED"}
+# ── 10. Human-In-The-Loop Shot Correction ──────────────────────────────────
+
+class ShotCorrectionRequest(BaseModel):
+    rally_index: int = 0
+    action: str = "update"  # "update", "add", "delete"
+    frame: int
+    shot_type: str = "Forehand"
+    player_id: int = 1
+    shot_speed_kmh: float = 120.0
+
+
+@app.post("/internal/v1/test/runs/{run_id}/shots/correct")
+async def correct_shot_label(run_id: str, payload: ShotCorrectionRequest):
+    """
+    Human-in-the-loop endpoint to update, add, or delete shot labels directly from the Web UI.
+    Persists corrections to result.json and logs user edits for model fine-tuning.
+    """
+    run_dir = RUNS_DIR / run_id
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    target_files = [run_dir / "result.json"]
+    rally_dir = run_dir / "rallies" / f"rally_{payload.rally_index:02d}"
+    if rally_dir.exists():
+        target_files.append(rally_dir / "result.json")
+
+    updated_result = {}
+    for res_file in target_files:
+        if not res_file.exists():
+            continue
+        try:
+            with open(res_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Update rallies shot types dictionary
+            rallies = data.get("rallies", [])
+            target_rally = None
+            if payload.rally_index < len(rallies):
+                target_rally = rallies[payload.rally_index]
+            elif rallies:
+                target_rally = rallies[0]
+
+            if target_rally is not None:
+                st = target_rally.setdefault("shotTypes", {})
+                if payload.action == "delete":
+                    if payload.shot_type in st and st[payload.shot_type] > 0:
+                        st[payload.shot_type] -= 1
+                    target_rally["shotCount"] = max(0, target_rally.get("shotCount", 1) - 1)
+                elif payload.action == "add":
+                    st[payload.shot_type] = st.get(payload.shot_type, 0) + 1
+                    target_rally["shotCount"] = target_rally.get("shotCount", 0) + 1
+                    if payload.shot_type.lower() == "serve":
+                        target_rally["serveSpeedKmh"] = max(target_rally.get("serveSpeedKmh", 0.0), payload.shot_speed_kmh)
+                elif payload.action == "update":
+                    st[payload.shot_type] = st.get(payload.shot_type, 0) + 1
+                    if payload.shot_type.lower() == "serve":
+                        target_rally["serveSpeedKmh"] = max(target_rally.get("serveSpeedKmh", 0.0), payload.shot_speed_kmh)
+
+            with open(res_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            updated_result = data
+        except Exception as e:
+            logger.error(f"Error updating result.json: {e}")
+
+    # Append to human-in-the-loop training annotations log
+    audit_file = run_dir / "user_corrections.json"
+    corrections_list = []
+    if audit_file.exists():
+        try:
+            with open(audit_file, "r", encoding="utf-8") as f:
+                corrections_list = json.load(f)
+        except Exception:
+            corrections_list = []
+
+    corrections_list.append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "rally_index": payload.rally_index,
+        "action": payload.action,
+        "frame": payload.frame,
+        "shot_type": payload.shot_type,
+        "player_id": payload.player_id,
+        "shot_speed_kmh": payload.shot_speed_kmh,
+    })
+
+    try:
+        with open(audit_file, "w", encoding="utf-8") as f:
+            json.dump(corrections_list, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Could not write audit log: {e}")
+
+    return {"status": "SUCCESS", "message": f"Shot {payload.action}ed successfully", "result": updated_result}
 
 
 if __name__ == "__main__":

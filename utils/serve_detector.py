@@ -45,14 +45,15 @@ from __future__ import annotations
 from utils.bbox_utils import get_center_of_bbox
 
 # How far beyond a baseline a server may stand, as a fraction of court length.
-# Servers stand on or just behind the line; 12 % of court length (~3 m) is generous
-# enough for a deep stance without reaching into rally territory.
-BASELINE_TOLERANCE_FRAC = 0.12
+# Servers stand on or just behind the line; 18 % of court length (~4.2 m) accommodates
+# deep stances and camera projection distortion at the far baseline.
+BASELINE_TOLERANCE_FRAC = 0.18
 
-# The ball must clear the top of the player's box by this fraction of the box height.
-# Kept at 0 (simply "above the box") because a serving player's box often already
-# includes the raised hitting arm, which pushes its top edge up.
-HEAD_CLEARANCE_FRAC = 0.0
+# The ball clearance threshold expressed as a fraction from the bounding box top (py1).
+# During a serve, YOLO boxes include the raised arm and racket, pushing py1 well above
+# the player's anatomical head. Allowing up to 0.22 * box_height ensures contacts inside
+# the overhead racket-reach zone are properly identified as overhead serves.
+HEAD_CLEARANCE_FRAC = 0.22
 
 # Two serves cannot be this close together. A point does not start twice inside a few
 # seconds, and even a fault followed by a second serve leaves time to retrieve a ball and
@@ -62,14 +63,26 @@ HEAD_CLEARANCE_FRAC = 0.0
 MIN_SERVE_SEPARATION_S = 3.0
 
 
-def _hitting_player(frame_players: dict, ball_center) -> int | None:
-    """The player whose box centre is horizontally nearest the ball."""
+def _hitting_player(frame_players: dict, ball_center, active_ids=None) -> int | None:
+    """The player nearest the ball in 2D space, prioritizing active players if provided."""
     if not frame_players:
         return None
-    return min(
-        frame_players,
-        key=lambda pid: abs(get_center_of_bbox(frame_players[pid])[0] - ball_center[0]),
-    )
+    eligible = {
+        pid: box for pid, box in frame_players.items()
+        if active_ids is None or pid in active_ids
+    }
+    if not eligible:
+        eligible = frame_players
+
+    bx, by = ball_center
+
+    def box_distance(pid):
+        x1, y1, x2, y2 = eligible[pid]
+        dx = max(x1 - bx, 0.0, bx - x2)
+        dy = max(y1 - by, 0.0, by - y2)
+        return (dx * dx + dy * dy) ** 0.5
+
+    return min(eligible, key=box_distance)
 
 
 def is_serve(
@@ -102,13 +115,34 @@ def is_serve(
     if frame >= len(ball_detections) or frame >= len(player_detections):
         return result(False, "frame out of range")
 
-    ball_box = ball_detections[frame].get(1)
+    # Temporal fallback for ball detection (search +/-2 frames if missing on contact)
+    ball_box = None
+    for offset in (0, -1, 1, -2, 2):
+        fn = frame + offset
+        if 0 <= fn < len(ball_detections):
+            box = ball_detections[fn].get(1)
+            if box:
+                ball_box = box
+                break
     if not ball_box:
         return result(False, "no ball detection at contact")
 
-    frame_players = player_detections[frame]
+    # Temporal fallback for player detections
+    frame_players = player_detections[frame] if frame < len(player_detections) else {}
+    if not frame_players:
+        for offset in (-1, 1, -2, 2):
+            fn = frame + offset
+            if 0 <= fn < len(player_detections) and player_detections[fn]:
+                frame_players = player_detections[fn]
+                break
+
+    active_ids = set()
+    for f_pos in player_mini_court.values():
+        active_ids.update(f_pos.keys())
+    active_ids = active_ids if active_ids else None
+
     ball_centre = get_center_of_bbox(ball_box)
-    player_id = _hitting_player(frame_players, ball_centre)
+    player_id = _hitting_player(frame_players, ball_centre, active_ids=active_ids)
     if player_id is None:
         return result(False, "no player detected at contact")
 
@@ -120,6 +154,13 @@ def is_serve(
 
     # ── Evidence 2: struck from the baseline or behind it ─────────────────────
     position = player_mini_court.get(frame, {}).get(player_id)
+    if position is None:
+        for offset in (-1, 1, -2, 2, -3, 3):
+            fn = frame + offset
+            pos = player_mini_court.get(fn, {}).get(player_id)
+            if pos is not None:
+                position = pos
+                break
     if position is None:
         return result(False, "no mini-court position for hitter")
 
@@ -134,7 +175,8 @@ def is_serve(
 
 
 def _ball_clearance(frame: int, ball_detections: list[dict],
-                    player_detections: list[dict]) -> float:
+                    player_detections: list[dict],
+                    player_mini_court: dict | None = None) -> float:
     """
     How far above the hitter's head the ball sits, in that player's own box heights.
 
@@ -142,12 +184,29 @@ def _ball_clearance(frame: int, ball_detections: list[dict],
     Normalising by box height makes near and far players comparable, since the same real
     clearance is far fewer pixels at the back of the court.
     """
-    ball_box = ball_detections[frame].get(1)
-    frame_players = player_detections[frame]
+    ball_box = None
+    for offset in (0, -1, 1, -2, 2):
+        fn = frame + offset
+        if 0 <= fn < len(ball_detections):
+            box = ball_detections[fn].get(1)
+            if box:
+                ball_box = box
+                break
+    frame_players = player_detections[frame] if frame < len(player_detections) else {}
+    if not frame_players:
+        for offset in (-1, 1, -2, 2):
+            fn = frame + offset
+            if 0 <= fn < len(player_detections) and player_detections[fn]:
+                frame_players = player_detections[fn]
+                break
     if not ball_box or not frame_players:
         return float("-inf")
     ball_centre = get_center_of_bbox(ball_box)
-    player_id = _hitting_player(frame_players, ball_centre)
+    active_ids = set()
+    if player_mini_court:
+        for f_pos in player_mini_court.values():
+            active_ids.update(f_pos.keys())
+    player_id = _hitting_player(frame_players, ball_centre, active_ids=active_ids if active_ids else None)
     if player_id is None:
         return float("-inf")
     px1, py1, px2, py2 = frame_players[player_id]
@@ -197,7 +256,7 @@ def detect_serve_frames(
         ]
         if not opening_candidates:
             return []
-        return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections))]
+        return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections, player_mini_court))]
 
     if len(candidates) < 2:
         return candidates

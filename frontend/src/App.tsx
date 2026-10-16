@@ -17,12 +17,15 @@ import { LogsModal } from './components/LogsModal';
 
 import { RallyTelemetry } from './types/telemetry';
 import { TelemetryProvider, useTelemetry } from './api/TelemetryContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
   return (
-    <TelemetryProvider>
-      <AppBody />
-    </TelemetryProvider>
+    <ErrorBoundary>
+      <TelemetryProvider>
+        <AppBody />
+      </TelemetryProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -43,7 +46,7 @@ function AppBody() {
   const PLAYER_2 = players[1];
   const [activeTab, setActiveTab] = useState<string>('overview');
   // Default selected rally is #13 (Peak Record Rally matching Image 1)
-  const [selectedRally, setSelectedRally] = useState<RallyTelemetry>(
+  const [selectedRally, setSelectedRally] = useState<RallyTelemetry | undefined>(
     RALLIES_DATA.find((r) => r.id === '#13') || RALLIES_DATA[0]
   );
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
@@ -65,7 +68,11 @@ function AppBody() {
   // selectedRally mãi là object mock (thiếu startMs) → CourtTracking không tìm
   // được rallyIndex và vẽ nhầm SVG mẫu dù dữ liệu thật đã sẵn sàng.
   useEffect(() => {
-    const current = RALLIES_DATA.find((r) => r.id === selectedRally.id);
+    if (!RALLIES_DATA || RALLIES_DATA.length === 0) {
+      setSelectedRally(undefined);
+      return;
+    }
+    const current = RALLIES_DATA.find((r) => r.id === selectedRally?.id);
     if (!current) {
       setSelectedRally(RALLIES_DATA[0]);
     } else if (current !== selectedRally) {

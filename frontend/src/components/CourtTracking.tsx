@@ -9,7 +9,7 @@ import { buildRally3DTrajectory } from '../api/court3DMap';
 import { computePlayerMetrics, hottestCell } from '../api/courtMap';
 
 interface CourtTrackingProps {
-  selectedRally: RallyTelemetry;
+  selectedRally?: RallyTelemetry;
   onSelectRally?: (rally: RallyTelemetry) => void;
 }
 
@@ -31,11 +31,11 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
 
   // Rally đang chọn tương ứng index nào trong rallies (data thật).
   const rallyIndex = useMemo(() => {
-    const start = selectedRally.startMs;
+    const start = selectedRally?.startMs;
     if (!ar || start == null) return -1;
     const rs = ar.result?.rallies ?? [];
     return rs.findIndex((r) => Math.abs(r.startMs - start) < 1500);
-  }, [ar, selectedRally.id, selectedRally.startMs]);
+  }, [ar, selectedRally?.id, selectedRally?.startMs]);
 
   const hasReal = ar !== null && rallyIndex >= 0 && (ar.court?.segments?.length ?? 0) > 0;
 
@@ -56,7 +56,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
 
   // Dựng dữ liệu 3D thực tế từ telemetry
   const trajectory3D = useMemo(() => {
-    return buildRally3DTrajectory(ar, selectedRally, rallyIndex);
+    return buildRally3DTrajectory(ar, selectedRally ?? null, rallyIndex);
   }, [ar, selectedRally, rallyIndex]);
 
   // Ball flight animation
@@ -93,7 +93,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
     return () => {
       cancelAnimationFrame(animFrame);
     };
-  }, [isPlaying, selectedRally.id]);
+  }, [isPlaying, selectedRally?.id]);
 
   // Trajectory points calculation
   // Start from P1 side (x: 125, y: 160) arching to P2 side impact (x: 410, y: 160)
@@ -128,12 +128,12 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
         {/* Header Actions: Quick Rally Picker & View Switchers */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Quick Rally Picker in Header */}
-          {rallies.length > 0 && (
+          {rallies.length > 0 && selectedRally && (
             <div className="flex items-center gap-1 bg-[#0a0f1d] px-2 py-1 rounded-lg border border-white/10 text-xs font-mono">
               <span className="text-[#8f9bb3] text-[10px]">Pha:</span>
               <button
                 onClick={() => {
-                  const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                  const curIdx = rallies.findIndex((r) => r.id === selectedRally?.id);
                   const prevIdx = curIdx > 0 ? curIdx - 1 : rallies.length - 1;
                   onSelectRally?.(rallies[prevIdx]);
                 }}
@@ -143,7 +143,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <select
-                value={selectedRally.id}
+                value={selectedRally?.id ?? ''}
                 onChange={(e) => {
                   const target = rallies.find((r) => r.id === e.target.value);
                   if (target) onSelectRally?.(target);
@@ -158,7 +158,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
               </select>
               <button
                 onClick={() => {
-                  const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                  const curIdx = rallies.findIndex((r) => r.id === selectedRally?.id);
                   const nextIdx = curIdx < rallies.length - 1 ? curIdx + 1 : 0;
                   onSelectRally?.(rallies[nextIdx]);
                 }}
@@ -237,7 +237,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
           {rallies.length > 0 && (
             <button
               onClick={() => {
-                const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                const curIdx = rallies.findIndex((r) => r.id === selectedRally?.id);
                 const prevIdx = curIdx > 0 ? curIdx - 1 : rallies.length - 1;
                 onSelectRally?.(rallies[prevIdx]);
               }}
@@ -247,11 +247,11 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
               <ChevronLeft className="w-3 h-3" />
             </button>
           )}
-          <span className="text-[#caf300] font-bold">RALLY {selectedRally.id}</span>
+          <span className="text-[#caf300] font-bold">RALLY {selectedRally?.id ?? '—'}</span>
           {rallies.length > 0 && (
             <button
               onClick={() => {
-                const curIdx = rallies.findIndex((r) => r.id === selectedRally.id);
+                const curIdx = rallies.findIndex((r) => r.id === selectedRally?.id);
                 const nextIdx = curIdx < rallies.length - 1 ? curIdx + 1 : 0;
                 onSelectRally?.(rallies[nextIdx]);
               }}
@@ -262,7 +262,7 @@ export const CourtTracking: React.FC<CourtTrackingProps> = ({ selectedRally, onS
             </button>
           )}
           <span className="text-white/40">|</span>
-          <span>{selectedRally.maxSpeed} KM/H</span>
+          <span>{selectedRally ? `${selectedRally.maxSpeed} KM/H` : '—'}</span>
         </div>
 
         {/* Court Canvas: 3D Three.js khi chọn 3D, hoặc 2D SVG khi chọn Tactical / Trajectory */}

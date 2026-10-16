@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
 from .ball_state import CONTACT, BOUNCE
@@ -84,16 +85,20 @@ def _load_weights(path: str = DEFAULT_WEIGHTS_PATH) -> dict | None:
 def compute_event_features(
     positions: list[tuple[float, float] | None],
     event_frame: int,
-    window: int = EVENT_WINDOW,
+    window: int | None = None,
+    fps: float = 30.0,
 ) -> dict | None:
     """
     Extract the trajectory-shape features the classifier needs around `event_frame`.
+    Normalizes per-frame velocities by (fps / 30.0) so classifier weights trained at
+    30 fps maintain invariant physical meaning across 60 fps or slow-motion clips.
 
     Args:
         positions: per-frame (x, y) ball centre, or None where undetected. Index must
                    align with `event_frame`.
         event_frame: the floor-level candidate frame (from classify_floor_level).
-        window:    frames of context required on each side (default matches training).
+        window:    frames of context required on each side (defaults to EVENT_WINDOW at 30fps).
+        fps:       sequence frame rate (e.g. 30.0 or 60.0).
 
     Returns:
         The six trained features, or None if there isn't enough clean position data
@@ -102,15 +107,19 @@ def compute_event_features(
     if event_frame < 0 or event_frame >= len(positions) or positions[event_frame] is None:
         return None
 
+    if window is None:
+        window = max(2, int(round(EVENT_WINDOW * (fps / 30.0))))
+
     before = [p for p in positions[max(0, event_frame - window):event_frame] if p is not None]
-    after  = [p for p in positions[event_frame + 1:event_frame + 1 + window] if p is not None]
+    after  = [p for p in positions[event_frame + 1:min(len(positions), event_frame + 1 + window)] if p is not None]
     if len(before) < 2 or len(after) < 2:
         return None
 
-    vx_before = (before[-1][0] - before[0][0]) / (len(before) - 1)
-    vy_before = (before[-1][1] - before[0][1]) / (len(before) - 1)
-    vx_after  = (after[-1][0] - after[0][0]) / (len(after) - 1)
-    vy_after  = (after[-1][1] - after[0][1]) / (len(after) - 1)
+    scale = fps / 30.0
+    vx_before = ((before[-1][0] - before[0][0]) / (len(before) - 1)) * scale
+    vy_before = ((before[-1][1] - before[0][1]) / (len(before) - 1)) * scale
+    vx_after  = ((after[-1][0] - after[0][0]) / (len(after) - 1)) * scale
+    vy_after  = ((after[-1][1] - after[0][1]) / (len(after) - 1)) * scale
 
     # These must match eval/explore_hit_bounce_features.py exactly, including the
     # convention below: the trained weights assume this encoding, and a mismatch here
@@ -183,13 +192,15 @@ def classify_hit_or_bounce(
 
 def detect_xvelocity_candidates(
     ball_detections: list[dict],
-    min_delta_x: float = 5.0,
-    min_spacing: int = 15,
-    window: int = EVENT_WINDOW,
+    min_delta_x: float | None = None,
+    min_spacing: int | None = None,
+    window: int | None = None,
+    fps: float = 30.0,
 ) -> list[int]:
     """
     Candidate contact/bounce frames from local peaks in |horizontal-velocity change|,
     complementing (not replacing) trajectory-reversal detection.
+    Automatically scales context window, threshold, and spacing according to frame rate (fps).
 
     Why this exists: journal 0014 found a structural gap in y-reversal-only detection -
     some real contacts (verified on the reference clip) don't reverse vertical direction
@@ -198,23 +209,26 @@ def detect_xvelocity_candidates(
     show a sharp change in horizontal velocity (the physical signal behind
     hit_bounce_classifier - journal 0012), even when the vertical trajectory barely moves.
 
-    Tested standalone at dataset scale first (91 real clips): x-velocity alone actually
-    recalls WORSE than y-reversal (70.3% vs 76.0% at the best threshold) - it is not a
-    good replacement. But the UNION of both signals recalls 87.7%, a genuine +11.7 point
-    gain, because they catch different kinds of real events (vertical-redirect shots vs
-    horizontal-redirect shots). Use this alongside get_ball_shot_frames, not instead of
-    it - feed the union to classify_reversals_by_trajectory, which is what actually
-    filters the resulting extra candidates back down to real contacts/bounces.
-
     Args:
         ball_detections: per-frame {1: [x1,y1,x2,y2]} (same format as get_ball_shot_frames).
         min_delta_x:     minimum |vx change| to count as a candidate peak.
+                         Defaults to 5.0 at 30fps, scaled with fps.
         min_spacing:     minimum frames between two candidates.
+                         Defaults to 15 at 30fps, scaled with fps.
         window:          frames of context on each side used to compute velocity.
+                         Defaults to EVENT_WINDOW at 30fps, scaled with fps.
+        fps:             sequence frame rate (e.g. 30.0 or 60.0).
 
     Returns:
         Candidate frame indices, sorted, at least min_spacing apart.
     """
+    if min_spacing is None:
+        min_spacing = max(10, int(round(15.0 * (fps / 30.0))))
+    if window is None:
+        window = max(2, int(round(EVENT_WINDOW * (fps / 30.0))))
+    if min_delta_x is None:
+        min_delta_x = 5.0 * (30.0 / fps)
+
     positions: list[tuple[float, float] | None] = []
     for det in ball_detections:
         bbox = det.get(1)
@@ -246,54 +260,32 @@ def detect_xvelocity_candidates(
     return candidates
 
 
-def merge_nearby_candidates(candidates: list[int], min_gap: int = 10) -> list[int]:
+def merge_nearby_candidates(
+    candidates: list[int],
+    min_gap: int = 10,
+    ball_detections: list[dict] | None = None,
+    fps: float = 30.0,
+    min_gap_sec: float | None = None,
+) -> list[int]:
     """
     Collapse candidates within min_gap frames of each other into one representative
-    frame per cluster (the cluster's median).
+    frame per cluster (the cluster's median or trajectory impulse peak).
 
-    get_ball_shot_frames (y-reversal) and detect_xvelocity_candidates each fire near a
-    real event independently, with no knowledge of each other, so their union can put
-    several candidates a few frames apart around the same single real contact. On our
-    own reference clip this inflated the apparent shot count from 7 (y-reversal only,
-    journal 0012) to 22 (union, journal 0015) -- most of the "extra" shots turned out to
-    be duplicate detections of the same handful of real events, not new false events
-    (verified frame by frame). It also made downstream per-frame
-    work (pose classification) sensitive to *which* nearby frame got checked: contact
-    happens at one instant, so a candidate a few frames off has different wrist
-    positions than the true contact frame, and pose can succeed on one cluster member
-    while failing on another for the same swing.
-
-    Clustering is bounded, not transitive
-    -------------------------------------
-    A candidate joins a cluster when it is within min_gap of the cluster's FIRST member,
-    so no cluster is ever wider than min_gap frames.
-
-    The original version compared against the cluster's LAST member, which chains: with
-    min_gap=10, candidates at frames 0, 10, 20, 30, 40 all collapse into one cluster
-    spanning 40 frames and report a single event at frame 20. In a dense rally that is
-    not a corner case, it is the normal case, and it silently deleted real contacts.
-
-    Measured across 12 dataset clips, 91 labelled contacts, changing only the linkage:
-
-        linkage    recall   precision      F1
-        chained     51.6%      94.0%    0.667
-        bounded     68.1%      93.9%    0.790
-
-    16.5 points of recall at no cost in precision, because the events being destroyed
-    were real ones. The threshold itself needed no retuning: it was the linkage, not the
-    value. Sweeping min_gap from 3 to 10 under bounded linkage moves precision from 75%
-    to 94% while recall moves the other way, and 10 sits at the best F1 as well as the
-    best precision, which is the trade this project wants.
-
-    Reproduce with `python eval/event_recall_funnel.py --sweep-gap`.
+    Supports trajectory-aware candidate merging and frame-rate normalization:
+    - If ball_detections is provided, candidates within min_gap that exhibit separate,
+      distinct directional deflections (e.g. rapid volley exchange) are kept separate,
+      recovering real contacts that a fixed frame gap previously destroyed.
+    - If candidates are duplicate detections of the same single deflection, they collapse
+      to the frame with the highest trajectory impulse (or cluster median).
+    - If min_gap_sec is specified, cluster width is normalized across frame rates:
+      gap_frames = max(2, round(min_gap_sec * fps)).
 
     Args:
-        candidates: raw candidate frames (e.g. the union of get_ball_shot_frames and
-                    detect_xvelocity_candidates), any order.
-        min_gap:    maximum width of a cluster, in frames. Note this is frames rather
-                    than seconds, so it is implicitly tied to frame rate; at 30fps it is
-                    0.33s, which is shorter than the fastest realistic bounce-to-contact
-                    interval. Footage far from 30fps should revisit it.
+        candidates:      raw candidate frames (e.g. union of ball generators).
+        min_gap:         cluster width in frames (used when min_gap_sec is None).
+        ball_detections: optional per-frame ball bounding boxes for trajectory impulse check.
+        fps:             frame rate of the video.
+        min_gap_sec:     cluster width in seconds (normalizes across frame rates).
 
     Returns:
         One representative frame per cluster, sorted.
@@ -301,21 +293,97 @@ def merge_nearby_candidates(candidates: list[int], min_gap: int = 10) -> list[in
     if not candidates:
         return []
 
-    ordered = sorted(candidates)
+    gap_frames = max(2, round(min_gap_sec * fps)) if min_gap_sec is not None else min_gap
+    ordered = sorted(set(candidates))
+    if len(ordered) <= 1:
+        return list(ordered)
+
+    if not ball_detections:
+        clusters: list[list[int]] = [[ordered[0]]]
+        for c in ordered[1:]:
+            if c - clusters[-1][0] <= gap_frames:
+                clusters[-1].append(c)
+            else:
+                clusters.append([c])
+        return [cluster[len(cluster) // 2] for cluster in clusters]
+
+    # Trajectory-aware clustering
+    n_det = len(ball_detections)
+    positions: list[tuple[float, float] | None] = []
+    for det in ball_detections:
+        bbox = det.get(1)
+        if bbox is not None:
+            positions.append(((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0))
+        else:
+            positions.append(None)
+
+    def _trajectory_impulse(frame: int, window: int = 3) -> tuple[float, float]:
+        if frame < 0 or frame >= n_det or positions[frame] is None:
+            return 0.0, 0.0
+        before = [p for p in positions[max(0, frame - window):frame] if p is not None]
+        after = [p for p in positions[frame + 1:min(n_det, frame + 1 + window)] if p is not None]
+        if len(before) < 1 or len(after) < 1:
+            return 0.0, 0.0
+        vx_in = (positions[frame][0] - before[0][0]) / max(1, len(before))
+        vy_in = (positions[frame][1] - before[0][1]) / max(1, len(before))
+        vx_out = (after[-1][0] - positions[frame][0]) / max(1, len(after))
+        vy_out = (after[-1][1] - positions[frame][1]) / max(1, len(after))
+        dvx = vx_out - vx_in
+        dvy = vy_out - vy_in
+        impulse_mag = (dvx * dvx + dvy * dvy) ** 0.5
+        speed_in = (vx_in * vx_in + vy_in * vy_in) ** 0.5
+        speed_out = (vx_out * vx_out + vy_out * vy_out) ** 0.5
+        angle_deg = 0.0
+        if speed_in > 0.5 and speed_out > 0.5:
+            dot = (vx_in * vx_out + vy_in * vy_out) / (speed_in * speed_out)
+            dot = max(-1.0, min(1.0, dot))
+            import math
+            angle_deg = math.degrees(math.acos(dot))
+        return impulse_mag, angle_deg
+
+    candidate_impulses = {c: _trajectory_impulse(c) for c in ordered}
+
     clusters: list[list[int]] = [[ordered[0]]]
     for c in ordered[1:]:
-        if c - clusters[-1][0] <= min_gap:
-            clusters[-1].append(c)
+        prev_cluster = clusters[-1]
+        gap_from_start = c - prev_cluster[0]
+        if gap_from_start <= gap_frames:
+            mag_c, angle_c = candidate_impulses[c]
+            mag_p, angle_p = candidate_impulses[prev_cluster[-1]]
+            is_distinct_hit = (
+                (c - prev_cluster[-1] >= 3)
+                and (mag_c > 4.0 and mag_p > 4.0)
+                and (angle_c > 40.0 and angle_p > 40.0)
+            )
+            if is_distinct_hit:
+                clusters.append([c])
+            else:
+                prev_cluster.append(c)
         else:
             clusters.append([c])
 
-    return [cluster[len(cluster) // 2] for cluster in clusters]
+    merged: list[int] = []
+    for cluster in clusters:
+        if len(cluster) == 1:
+            merged.append(cluster[0])
+        else:
+            best_f = cluster[len(cluster) // 2]
+            best_mag = -1.0
+            for f in cluster:
+                mag, _ = candidate_impulses[f]
+                if mag > best_mag and mag > 1.0:
+                    best_mag = mag
+                    best_f = f
+            merged.append(best_f)
+
+    return sorted(merged)
 
 
 def event_contact_probabilities(
     reversal_frames: list[int],
     ball_detections: list[dict],
     weights_path: str = DEFAULT_WEIGHTS_PATH,
+    fps: float = 30.0,
 ) -> dict[int, float]:
     """
     P(contact) per candidate frame, for frames the trajectory model can decide on.
@@ -335,7 +403,7 @@ def event_contact_probabilities(
 
     probabilities: dict[int, float] = {}
     for frame in reversal_frames:
-        result = classify_hit_or_bounce(compute_event_features(positions, frame),
+        result = classify_hit_or_bounce(compute_event_features(positions, frame, fps=fps),
                                         weights_path)
         if result is None:
             continue
@@ -406,8 +474,18 @@ def striking_side(
     """
     if frame >= len(ball_detections) or frame >= len(player_detections):
         return None
-    bbox = ball_detections[frame].get(1)
-    players = player_detections[frame]
+    bbox = ball_detections[frame].get(1) if frame < len(ball_detections) else None
+    players = player_detections[frame] if frame < len(player_detections) else {}
+    if bbox is None or not players:
+        for offset in (-1, 1, -2, 2):
+            fn = frame + offset
+            if 0 <= fn < len(ball_detections) and 0 <= fn < len(player_detections):
+                b = ball_detections[fn].get(1)
+                p = player_detections[fn]
+                if b is not None and p:
+                    bbox = b
+                    players = p
+                    break
     if bbox is None or not players:
         return None
 
@@ -420,7 +498,11 @@ def striking_side(
         return (dx * dx + dy * dy) ** 0.5
 
     nearest = min(players, key=box_distance)
-    return nearest if box_distance(nearest) <= max_distance_px else None
+    nearest_dist = box_distance(nearest)
+    nearest_h = max(30.0, float(players[nearest][3] - players[nearest][1]))
+    # Allow dynamic reach scaled with player height when max_distance_px is finite
+    effective_max = max(max_distance_px, 1.8 * nearest_h) if math.isfinite(max_distance_px) else float("inf")
+    return nearest if nearest_dist <= effective_max else None
 
 
 class DecodeNotes(list):
@@ -447,6 +529,8 @@ def derive_shot_frames(
     player_detections: list[dict],
     shot_player_distance_px: int = 300,
     deletion_prior: float | None = None,
+    fps: float = 30.0,
+    audio_candidates: list[int] | None = None,
 ):
     """
     Turn ball detections into the pipeline's confirmed shot and bounce frames.
@@ -460,10 +544,12 @@ def derive_shot_frames(
     aligned the *detections* between eval and pipeline; this closes the same gap for
     event derivation, which is where the shot numbers actually come from.
 
-    Three generators feed the union because each is blind to a different event shape:
+    Three ball generators feed the union because each is blind to a different event shape:
     y-reversal and x-velocity are hit-shaped by construction (x-velocity recalls only
     12% of bounces), while the bounce generator recalls 83.9%. Merging is what stops
     two generators firing on one real event and inflating the count.
+    Optional audio_candidates brings the 4th generator: acoustic string-bed transients
+    that recover contacts occluded by the player's body.
 
     Args:
         ball_tracker:             supplies `get_ball_shot_frames` (the y-reversal generator).
@@ -473,6 +559,8 @@ def derive_shot_frames(
         deletion_prior:           how readily rally decoding may discard a candidate as
                                   spurious. Defaults to the swept value in
                                   utils.rally_decode; pass 0.0 to disable discarding.
+        fps:                      frame rate of the video sequence.
+        audio_candidates:         optional frame candidates from acoustic impact onset.
 
     Returns:
         (shot_frames, bounce_frames, raw_reversal_frames, decode_flips). The first three
@@ -484,16 +572,31 @@ def derive_shot_frames(
     from .bounce_candidates import detect_bounce_candidates
     from .rally_decode import MEASURED_DELETION_PRIOR, decode_rally
 
-    raw_reversals = merge_nearby_candidates(sorted(
-        set(ball_tracker.get_ball_shot_frames(ball_detections))
-        | set(detect_xvelocity_candidates(ball_detections))
-        | set(detect_bounce_candidates(ball_detections))
-    ))
+    try:
+        y_reversals = ball_tracker.get_ball_shot_frames(ball_detections, fps=fps)
+    except TypeError:
+        y_reversals = ball_tracker.get_ball_shot_frames(ball_detections)
+
+    candidate_set = (
+        set(y_reversals)
+        | set(detect_xvelocity_candidates(ball_detections, fps=fps))
+        | set(detect_bounce_candidates(ball_detections, fps=fps))
+    )
+    if audio_candidates:
+        candidate_set |= set(audio_candidates)
+
+    raw_candidates = sorted(candidate_set)
+    raw_reversals = merge_nearby_candidates(
+        raw_candidates,
+        ball_detections=ball_detections,
+        fps=fps,
+        min_gap_sec=0.25,
+    )
 
     # Probabilities rather than labels, because decoding below needs to know how strongly
     # the classifier holds each opinion, not just which way it leans. Computed once and
     # used for both the fallback split and the decode.
-    probabilities = event_contact_probabilities(raw_reversals, ball_detections)
+    probabilities = event_contact_probabilities(raw_reversals, ball_detections, fps=fps)
 
     # Reversals the trajectory model cannot decide on (too little context, e.g. near a
     # clip boundary) fall back to player proximity rather than being silently dropped.
@@ -513,8 +616,48 @@ def derive_shot_frames(
     proximity_labels = {f: True for f in prox_contacts}
     proximity_labels.update({f: False for f in prox_bounces})
 
+    # Estimate court net zone dynamically from player distribution
+    top_ys, bot_ys = [], []
+    for p_dict in player_detections:
+        for box in p_dict.values():
+            cy = (box[1] + box[3]) / 2.0
+            if cy < 500:
+                top_ys.append(cy)
+            else:
+                bot_ys.append(cy)
+    if top_ys and bot_ys:
+        y_top_mean = sum(top_ys) / len(top_ys)
+        y_bot_mean = sum(bot_ys) / len(bot_ys)
+        y_net_est = (y_top_mean + y_bot_mean) / 2.0
+        court_h_est = y_bot_mean - y_top_mean
+        net_zone_lo = y_net_est - 0.15 * court_h_est
+        net_zone_hi = y_net_est + 0.15 * court_h_est
+        volley_reach_lo = y_net_est - 0.25 * court_h_est
+        volley_reach_hi = y_net_est + 0.25 * court_h_est
+    else:
+        net_zone_lo, net_zone_hi = -1.0, -1.0
+        volley_reach_lo, volley_reach_hi = -1.0, -1.0
+
+    # Filter out net-zone mid-flight noise candidates that have no volleyer nearby.
+    # In-flight net crossing is neither a groundstroke contact nor a court bounce.
+    filtered_reversals = []
+    for f in raw_reversals:
+        if net_zone_lo > 0 and f < len(ball_detections):
+            bbox = ball_detections[f].get(1)
+            if bbox is not None:
+                ball_y = (bbox[1] + bbox[3]) / 2.0
+                if net_zone_lo <= ball_y <= net_zone_hi:
+                    players = player_detections[f] if f < len(player_detections) else {}
+                    has_volleyer = any(
+                        volley_reach_lo <= (p_box[1] + p_box[3]) / 2.0 <= volley_reach_hi
+                        for p_box in players.values()
+                    )
+                    if not has_volleyer:
+                        continue
+        filtered_reversals.append(f)
+
     events = []
-    for frame in raw_reversals:
+    for frame in filtered_reversals:
         p_contact = probabilities.get(frame)
         if p_contact is None:
             if frame not in proximity_labels:
@@ -525,11 +668,91 @@ def derive_shot_frames(
                          else 1.0 - PROXIMITY_RELIABILITY)
         side = striking_side(frame, ball_detections, player_detections,
                              shot_player_distance_px)
+
+        # Physical constraint 1: No player nearby (ball in free flight) cannot be a player contact
+        if side is None:
+            p_contact = min(p_contact, 1e-4)
+
         events.append((frame, p_contact, side))
 
     if deletion_prior is None:
         deletion_prior = MEASURED_DELETION_PRIOR
     decoded = decode_rally(events, deletion_prior=deletion_prior)
+
+    # Physical constraint 2: Minimum cross-court inter-shot flight time and player reach.
+    # Flight across a 23.77m court at rally speeds takes at least 0.65s (39 frames at 60fps).
+    min_flight_frames = max(10, int(round(0.65 * fps)))
+    volley_flight_frames = max(6, int(round(0.35 * fps)))
+
+    def _is_net_player(frame_idx):
+        if frame_idx >= len(player_detections) or volley_reach_lo <= 0:
+            return False
+        players = player_detections[frame_idx]
+        return any(volley_reach_lo <= (p_box[1] + p_box[3]) / 2.0 <= volley_reach_hi for p_box in players.values())
+
+    def _ball_player_dist(frame_idx):
+        if frame_idx >= len(ball_detections) or frame_idx >= len(player_detections):
+            return float("inf"), 100.0
+        min_d = float("inf")
+        best_box_h = 100.0
+        # Check +/- 2 frames to be robust to single-frame ball blur or player occlusion
+        for offset in (0, -1, 1, -2, 2):
+            fn = frame_idx + offset
+            if 0 <= fn < len(ball_detections) and 0 <= fn < len(player_detections):
+                bbox = ball_detections[fn].get(1)
+                players = player_detections[fn]
+                if bbox is not None and players:
+                    bx, by = (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+                    for box in players.values():
+                        dx = max(box[0] - bx, 0.0, bx - box[2])
+                        dy = max(box[1] - by, 0.0, by - box[3])
+                        d = (dx * dx + dy * dy) ** 0.5
+                        if d < min_d:
+                            min_d = d
+                            best_box_h = max(30.0, float(box[3] - box[1]))
+        return min_d, best_box_h
+
+    filtered_contacts: list[int] = []
+    discarded_flight: list[int] = []
+
+    for f in decoded.contacts:
+        # A true contact requires a player within realistic reach (scaled dynamically by player height / torso)
+        dist, box_h = _ball_player_dist(f)
+        max_reach = max(280.0, 1.8 * box_h)
+        if striking_side(f, ball_detections, player_detections, shot_player_distance_px) is None or dist > max_reach:
+            discarded_flight.append(f)
+            continue
+
+        if not filtered_contacts:
+            filtered_contacts.append(f)
+            continue
+        prev = filtered_contacts[-1]
+        dt = f - prev
+        is_net = _is_net_player(f) or _is_net_player(prev)
+        side_prev = striking_side(prev, ball_detections, player_detections)
+        side_curr = striking_side(f, ball_detections, player_detections)
+        is_cross_court = (side_prev is not None and side_curr is not None and side_prev != side_curr)
+
+        if is_net:
+            req_dt = volley_flight_frames
+        elif is_cross_court:
+            # Fast flat serve or return across 23.77m can reach opponent in ~0.45s (11 frames at 25fps)
+            req_dt = max(8, int(round(0.45 * fps)))
+        else:
+            req_dt = min_flight_frames
+
+        if dt < req_dt:
+            # Flight time violated: one of the two is a phantom mid-flight trigger.
+            # Keep the contact closer to a player's body/racket.
+            d_prev, _ = _ball_player_dist(prev)
+            d_curr, _ = _ball_player_dist(f)
+            if d_curr < d_prev:
+                discarded_flight.append(prev)
+                filtered_contacts[-1] = f
+            else:
+                discarded_flight.append(f)
+            continue
+        filtered_contacts.append(f)
 
     notes = DecodeNotes(decoded.flips)
     if decoded.discarded:
@@ -538,5 +761,10 @@ def derive_shot_frames(
             f"{decoded.discarded}: no legal place in the rally, and dropping them was a "
             f"better explanation than promoting them"
         )
+    if discarded_flight:
+        notes.append(
+            f"{len(discarded_flight)} phantom candidate(s) discarded by physical flight-time/reach "
+            f"constraints at frames {discarded_flight}"
+        )
     notes.diagnostics = decoded.diagnostics()
-    return decoded.contacts, decoded.bounces, raw_reversals, notes
+    return sorted(filtered_contacts), decoded.bounces, raw_reversals, notes

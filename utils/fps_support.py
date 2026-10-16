@@ -99,6 +99,8 @@ class FpsSupport:
     fps: float
     status: str
     reason: str
+    stride: int = 1
+    effective_fps: float | None = None
 
     @property
     def is_supported(self) -> bool:
@@ -106,12 +108,16 @@ class FpsSupport:
 
     def as_dict(self) -> dict:
         """Shape written into summary.json, so a consumer can act on it."""
-        return {
+        d = {
             "fps": round(self.fps, 2),
             "status": self.status,
             "measured_range_fps": [SUPPORTED_MIN_FPS, SUPPORTED_MAX_FPS],
             "reason": self.reason,
         }
+        if self.stride > 1:
+            d["subsample_stride"] = self.stride
+            d["effective_fps"] = round(self.effective_fps or (self.fps / self.stride), 2)
+        return d
 
 
 def assess_fps(fps: float | None) -> FpsSupport:
@@ -191,3 +197,48 @@ def assess_fps(fps: float | None) -> FpsSupport:
             f"{detail}"
         ),
     )
+
+
+def assess_fps_with_subsampling(header_fps: float | None) -> tuple[int, FpsSupport]:
+    """
+    Assess video frame rate with automatic temporal subsampling for high-FPS footage.
+
+    Clips with header_fps >= 48.0 (e.g. 50 fps, 59.94 fps, 60 fps, 120 fps) are automatically
+    subsampled by stride = round(header_fps / 30.0) into the pipeline's calibrated ~30 fps domain.
+
+    Returns:
+        (stride, FpsSupport)
+    """
+    if not header_fps or header_fps <= 0:
+        return 1, assess_fps(header_fps)
+
+    if header_fps >= 48.0:
+        stride = max(1, int(round(header_fps / 30.0)))
+        effective_fps = header_fps / stride
+        sub_support = assess_fps(effective_fps)
+
+        if sub_support.is_supported:
+            status = SUPPORTED
+            reason = (
+                f"{header_fps:.1f} fps input video is supported via {stride}x temporal "
+                f"subsampling (effective analysis rate: {effective_fps:.1f} fps), "
+                f"matching the calibrated {SUPPORTED_MIN_FPS:.0f} to {SUPPORTED_MAX_FPS:.0f} "
+                f"fps model range."
+            )
+        else:
+            status = sub_support.status
+            reason = (
+                f"{header_fps:.1f} fps input video was subsampled {stride}x to "
+                f"{effective_fps:.1f} fps: {sub_support.reason}"
+            )
+
+        return stride, FpsSupport(
+            fps=header_fps,
+            status=status,
+            reason=reason,
+            stride=stride,
+            effective_fps=effective_fps,
+        )
+
+    return 1, assess_fps(header_fps)
+

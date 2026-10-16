@@ -12,6 +12,10 @@ interface TelemetryState {
   match: MatchSummary;
   players: PlayerStats[];
   rallies: RallyTelemetry[];
+  p1Handedness: 'right' | 'left';
+  p2Handedness: 'right' | 'left';
+  setP1Handedness: (h: 'right' | 'left') => void;
+  setP2Handedness: (h: 'right' | 'left') => void;
   reload: () => void;
   selectRun: (runId: string) => void;
 }
@@ -30,6 +34,22 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [runId, setRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<EngineRun[]>([]);
   const [tick, setTick] = useState(0);
+  const [p1Handedness, setP1Handedness] = useState<'right' | 'left'>(() => {
+    return (localStorage.getItem('p1_handedness') as 'right' | 'left') || 'right';
+  });
+  const [p2Handedness, setP2Handedness] = useState<'right' | 'left'>(() => {
+    return (localStorage.getItem('p2_handedness') as 'right' | 'left') || 'right';
+  });
+
+  const updateP1Handedness = (h: 'right' | 'left') => {
+    setP1Handedness(h);
+    localStorage.setItem('p1_handedness', h);
+  };
+  const updateP2Handedness = (h: 'right' | 'left') => {
+    setP2Handedness(h);
+    localStorage.setItem('p2_handedness', h);
+  };
+
   const [mapped, setMapped] = useState(() => ({
     match: MATCH_INFO,
     players: [PLAYER_1, PLAYER_2],
@@ -62,7 +82,8 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setMapped(mapTelemetry(result, chosen.runId));
         setRunId(chosen.runId);
         setSource('live');
-      } catch {
+      } catch (err) {
+        console.error('Lỗi nạp telemetry từ engine:', err);
         if (!cancelled) {
           setSource('mock');
         }
@@ -84,8 +105,21 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [mapped]);
 
   const value = useMemo<TelemetryState>(
-    () => ({ loading, source, runId, runs, reload, selectRun, ...mapped, players: playersSafe }),
-    [loading, source, runId, runs, mapped, playersSafe]
+    () => ({
+      loading,
+      source,
+      runId,
+      runs,
+      reload,
+      selectRun,
+      p1Handedness,
+      p2Handedness,
+      setP1Handedness: updateP1Handedness,
+      setP2Handedness: updateP2Handedness,
+      ...mapped,
+      players: playersSafe,
+    }),
+    [loading, source, runId, runs, p1Handedness, p2Handedness, mapped, playersSafe]
   );
 
   return <TelemetryContext.Provider value={value}>{children}</TelemetryContext.Provider>;

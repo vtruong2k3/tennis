@@ -224,10 +224,10 @@ export const CourtARScreen: React.FC = () => {
           <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 font-mono text-[11px] pointer-events-none">
             <span className="px-2.5 py-1 rounded bg-[#0b121e]/90 backdrop-blur border border-white/10 text-white font-bold flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-[#caf300] animate-pulse"></span>
-              {currentRally.id} ({currentRally.timeRange})
+              {currentRally?.id ?? '—'} ({currentRally?.timeRange ?? '00:00 - 00:00'})
             </span>
             <span className="px-2 py-1 rounded bg-[#0b121e]/90 backdrop-blur border border-white/10 text-[#4cd7f6]">
-              {currentRally.shotsCount} cú đánh · {trajectory3D.bounces.length} điểm nảy
+              {currentRally?.shotsCount ?? 0} cú đánh · {trajectory3D.bounces.length} điểm nảy
             </span>
             {trajectory3D.hasRealTracking && (
               <span className="px-2 py-1 rounded bg-[#102a3a]/90 backdrop-blur border border-[#4cd7f6]/40 text-[#4cd7f6] font-semibold">
@@ -284,9 +284,9 @@ export const CourtARScreen: React.FC = () => {
           <div className="p-3 rounded-lg bg-[#0a0f1d] border border-white/5 flex flex-col justify-between">
             <span className="text-[#64748b] text-[10px] block font-semibold">VẬN TỐC TỨC THỜI (IMPACT SPEED)</span>
             <span className="text-[#caf300] font-bold text-base my-0.5">
-              {currentRally.maxSpeed > 0 ? `${currentRally.maxSpeed} km/h` : '85.4 km/h'}
+              {currentRally && currentRally.maxSpeed > 0 ? `${currentRally.maxSpeed} km/h` : '—'}
             </span>
-            <span className="text-[10px] text-[#94a3b8]">Giao bóng: {currentRally.serveSpeed > 0 ? `${currentRally.serveSpeed} km/h` : '—'}</span>
+            <span className="text-[10px] text-[#94a3b8]">Giao bóng: {currentRally && currentRally.serveSpeed > 0 ? `${currentRally.serveSpeed} km/h` : '—'}</span>
           </div>
 
           {/* Card 3: Thời gian bay */}
@@ -295,7 +295,7 @@ export const CourtARScreen: React.FC = () => {
             <span className="text-white font-bold text-base my-0.5">
               {trajectory3D.flightDurationSec.toFixed(2)} GIÂY
             </span>
-            <span className="text-[10px] text-[#94a3b8]">Thời lượng cả pha: {currentRally.durationSeconds}s</span>
+            <span className="text-[10px] text-[#94a3b8]">Thời lượng cả pha: {currentRally?.durationSeconds ?? 0}s</span>
           </div>
 
           {/* Card 4: Độ lệch vạch vôi */}

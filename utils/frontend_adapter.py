@@ -246,6 +246,8 @@ def build_ar_data(
     frame_width: int,
     frame_height: int,
     engine_result: dict[str, Any] | None = None,
+    shot_classifications: dict[int, Any] | None = None,
+    hitter_by_frame: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     """
     Construct ArData matching frontend/src/api/engine.ts.
@@ -315,11 +317,21 @@ def build_ar_data(
         if bbox is not None:
             cx = round((float(bbox[0]) + float(bbox[2])) / 2.0 / W, 4)
             cy = round((float(bbox[1]) + float(bbox[3])) / 2.0 / H, 4)
+            # Defense: Suppress points in the grandstand/billboard ceiling (v < 0.14)
+            if cy < 0.14:
+                continue
             pt = {"t": t_ms, "u": cx, "v": cy}
             trail.append(pt)
             if i in shot_set:
-                shots.append(pt)
-            if i in bounce_set:
+                s_dict = dict(pt)
+                s_dict["frame"] = i
+                if shot_classifications and i in shot_classifications:
+                    s_dict["shot_type"] = str(shot_classifications[i])
+                if hitter_by_frame and i in hitter_by_frame:
+                    s_dict["player"] = int(hitter_by_frame[i])
+                shots.append(s_dict)
+            # A court bounce must occur on the court floor, not in the air or above net (v > 0.28)
+            if i in bounce_set and cy >= 0.25:
                 bounces.append(pt)
 
     # 3. Player samples
@@ -422,6 +434,8 @@ def export_frontend_artifacts(
         frame_width=frame_width,
         frame_height=frame_height,
         engine_result=result_data,
+        shot_classifications=shot_classifications,
+        hitter_by_frame=hitter_by_frame,
     )
 
     # 1. result.json

@@ -66,3 +66,39 @@ def test_unordered_input_still_clusters_correctly():
 def test_duplicate_frames_collapse_too():
     result = merge_nearby_candidates([100, 100, 100], min_gap=10)
     assert result == [100]
+
+
+def test_min_gap_sec_normalizes_with_fps():
+    # At 60 fps, 0.25s is 15 frames -> 100 and 112 are within gap
+    res_60 = merge_nearby_candidates([100, 112], fps=60.0, min_gap_sec=0.25)
+    assert len(res_60) == 1
+
+    # At 30 fps, 0.25s is 8 frames -> 100 and 112 are > 8 frames apart, so kept separate
+    res_30 = merge_nearby_candidates([100, 112], fps=30.0, min_gap_sec=0.25)
+    assert res_30 == [100, 112]
+
+
+def test_trajectory_aware_keeps_distinct_rapid_hits():
+    # Synthetic trajectory with two distinct direction reversals:
+    # Frame 10-15: moving up (y 350 -> 300)
+    # Frame 15-21: moving down (y 300 -> 360) (First hit at frame 15)
+    # Frame 21-27: moving back up (y 360 -> 300) (Second hit at frame 21)
+    ball_detections = [{} for _ in range(35)]
+    for f in range(10, 16):
+        y = 350 - (f - 10) * 10
+        ball_detections[f] = {1: [100, y - 5, 110, y + 5]}
+    for f in range(16, 22):
+        y = 300 + (f - 15) * 10
+        ball_detections[f] = {1: [100, y - 5, 110, y + 5]}
+    for f in range(22, 28):
+        y = 360 - (f - 21) * 10
+        ball_detections[f] = {1: [100, y - 5, 110, y + 5]}
+
+    # Candidates within min_gap=10: 15 and 21 are 6 frames apart
+    result = merge_nearby_candidates(
+        [15, 21], min_gap=10, ball_detections=ball_detections
+    )
+    # Because both frames have independent velocity reversals (angle 180 deg),
+    # trajectory-aware merging preserves both hits instead of collapsing them!
+    assert result == [15, 21]
+

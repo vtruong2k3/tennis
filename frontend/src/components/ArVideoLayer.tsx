@@ -358,9 +358,22 @@ export const ArVideoLayer: React.FC<Props> = ({
           ctx.lineWidth = 2;
           ctx.setLineDash([4, 3]);
           ctx.beginPath();
-          ctx.moveTo(px(past[0].u), py(past[0].v));
+          let inPath = false;
           for (let i = 1; i < past.length; i++) {
-            ctx.lineTo(px(past[i].u), py(past[i].v));
+            const p0 = past[i - 1];
+            const p1 = past[i];
+            const dt = p1.t - p0.t;
+            const dist = Math.hypot(p1.u - p0.u, p1.v - p0.v);
+            // Ngắt nét nếu khoảng cách thời gian gián đoạn > 150ms hoặc nhảy vọt phi lý (> 8% màn hình / 40ms)
+            if (dt > 150 || (dt > 0 && dist / (dt / 40) > 0.08)) {
+              inPath = false;
+              continue;
+            }
+            if (!inPath) {
+              ctx.moveTo(px(p0.u), py(p0.v));
+              inPath = true;
+            }
+            ctx.lineTo(px(p1.u), py(p1.v));
           }
           ctx.stroke();
           ctx.restore();
@@ -374,6 +387,12 @@ export const ArVideoLayer: React.FC<Props> = ({
         for (let i = 1; i < recent.length; i++) {
           const p0 = recent[i - 1];
           const p1 = recent[i];
+          const dt = p1.t - p0.t;
+          const dist = Math.hypot(p1.u - p0.u, p1.v - p0.v);
+          // Ngắt đoạn vẽ nếu thời gian gián đoạn > 150ms hoặc vận tốc phi lý (> 8% màn hình / 40ms)
+          if (dt > 150 || (dt > 0 && dist / (dt / 40) > 0.08)) {
+            continue;
+          }
           const alpha = 1 - (tMs - p1.t) / TRAIL_WINDOW_MS;
           // Gradient từ hồng cánh sen đến vàng chanh neon
           ctx.strokeStyle = `rgba(202, 243, 0, ${Math.max(0.2, alpha).toFixed(2)})`;

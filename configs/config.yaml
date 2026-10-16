@@ -9,22 +9,27 @@ pipeline:
   shot_classification: true    # Enable shot type classification
   use_homography: true         # Real perspective homography (vs. nearest-keypoint approx)
   use_tracknet: true          # true = TrackNet ball detector; false = YOLO (set true after weights downloaded)
-  use_tracknet_v3: true       # true = TrackNetV3 SOTA pipeline with background estimation & InpaintNet
+  use_tracknet_v5: true       # true = TrackNetV5 SOTA pipeline (MDD + R-STR, intrinsic occlusion)
+  use_tracknet_v3: false      # TrackNetV3 fallback pipeline with background estimation & InpaintNet
   inpaint_occlusion: true     # Enable InpaintNet 1D ConvNet trajectory rectification for occluded ball frames
   use_pose_shots: true
+  shot_classifier_mode: "temporal_pose"  # "temporal_pose" (SOTA 21-frame YOLO11-Pose) | "legacy_pose" (MediaPipe 1-frame)
   use_sam3d_pose: false         # pose-based forehand/backhand (falls back to position rules when pose is unavailable)
 
 models:
   player: "yolo11x"
   ball: "models/last.pt"
+  yolo_pose: "yolo11n-pose.pt"
+  shot_classifier_temporal: "models/shot_classifier_temporal.pt"
   # Geometrically fine-tuned (translation/scale/perspective/flip). Beat the original
   # weights on BOTH gates: in-distribution val median 4.03 -> 2.90 px, and real-clip
   # court fits 4/9 -> 8/9 passing. Reproduce with eval/court_keypoint_accuracy.py
   # and eval/court_validity_calibration.py.
   # Original weights kept at models/keypoints_model.pth for comparison.
   court: "models/keypoints_model_geoaug.pth"
-  tracknet: "models/tracknet.pt"    # download: gdown 1XEYZ4myUN7QT-NeBYJI0xteLsvs-ZAOl -O models/tracknet.pt
+  tracknet_v5: "models/tracknet_v5.pt"
   tracknet_v3: "models/tracknet_v3.pt"
+  tracknet: "models/tracknet.pt"    # download: gdown 1XEYZ4myUN7QT-NeBYJI0xteLsvs-ZAOl -O models/tracknet.pt
   inpaintnet: "models/inpaintnet.pt"
   # download: curl -L -o models/pose_landmarker_lite.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
   pose: "models/pose_landmarker_lite.task"

@@ -308,41 +308,51 @@ class TrackNetBallTracker:
             for i, d in enumerate(detections)
         ]
         df = pd.DataFrame(rows).set_index("frame")
-        df[["x", "y"]] = df[["x", "y"]].interpolate().bfill().ffill()
+        is_nan = df["x"].isna()
+        group = (~is_nan).cumsum()
+        run_len = is_nan.groupby(group).transform("sum")
+
+        interp_df = df[["x", "y"]].interpolate(method="linear", limit_area="inside")
+        df[["x", "y"]] = interp_df.mask(is_nan & (run_len > 4))
 
         if smooth_window > 1:
             df["x"] = df["x"].rolling(smooth_window, center=True, min_periods=1).median()
             df["y"] = df["y"].rolling(smooth_window, center=True, min_periods=1).median()
 
         half = 12
-        return [
-            {1: [cx - half, cy - half, cx + half, cy + half]}
-            for cx, cy in ((float(r["x"]), float(r["y"])) for _, r in df.iterrows())
-        ]
+        output: list[dict] = []
+        for _, r in df.iterrows():
+            x_val = r["x"]
+            y_val = r["y"]
+            if pd.isna(x_val) or pd.isna(y_val):
+                output.append({})
+            else:
+                cx = float(x_val)
+                cy = float(y_val)
+                output.append({1: [cx - half, cy - half, cx + half, cy + half]})
+        return output
 
     def get_ball_shot_frames(
         self,
         detections:  list[dict],
         min_spacing: int   = 15,   # minimum frames between shots (~0.5 s at 30 fps)
         min_delta_y: float = 6.0,  # minimum y-change to count as a real reversal (px)
+        fps:         float = 30.0,
     ) -> list[int]:
         """
         Detect frames where the ball reverses vertical direction (a shot was hit).
-
-        Compares the average y-position over a context window before and after each
-        candidate frame.  This is more robust than the single-frame adjacent check,
-        which fires on interpolation noise and produces consecutive 1-frame "shots".
-
-        After finding all candidates, a minimum-spacing pass keeps only the first
-        frame of each dense burst, ensuring the shot count and inter-shot durations
-        are physically realistic.
+        Scales spacing and delta_y according to FPS for temporal invariance.
         """
+        eff_fps = max(1.0, float(fps))
+        eff_min_spacing = max(6, int(round(min_spacing * (eff_fps / 30.0))))
+        eff_min_delta_y = min_delta_y * (30.0 / eff_fps)
+
         y = np.array([
             (d[1][1] + d[1][3]) / 2.0 if d.get(1) else np.nan
             for d in detections
         ])
         n      = len(y)
-        window = max(3, min_spacing // 3)   # frames to average on each side
+        window = max(2, eff_min_spacing // 3)   # frames to average on each side
 
         candidates: list[int] = []
         for i in range(window, n - window):
@@ -362,13 +372,13 @@ class TrackNetBallTracker:
             delta_after  = avg_next - curr
 
             # Direction must flip AND the magnitude must be non-trivial
-            if delta_before * delta_after < 0 and abs(delta_before) >= min_delta_y:
+            if delta_before * delta_after < 0 and abs(delta_before) >= eff_min_delta_y:
                 candidates.append(i)
 
         # Keep only the first frame of each burst that is closer than min_spacing
         shot_frames: list[int] = []
         for frame in candidates:
-            if not shot_frames or frame - shot_frames[-1] >= min_spacing:
+            if not shot_frames or frame - shot_frames[-1] >= eff_min_spacing:
                 shot_frames.append(frame)
 
         return shot_frames

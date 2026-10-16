@@ -1,0 +1,34 @@
+{
+  "rally_01": {
+    "video_path": "runs/run_20261016_114958/rallies/rally_01/video.mp4",
+    "fps": 25.0,
+    "events": [
+      {"frame": 120, "player_id": 2, "shot_type": "Serve"},
+      {"frame": 183, "player_id": 1, "shot_type": "Backhand"},
+      {"frame": 204, "player_id": 2, "shot_type": "Forehand"},
+      {"frame": 280, "player_id": 1, "shot_type": "Forehand"},
+      {"frame": 307, "player_id": 2, "shot_type": "Backhand"}
+    ]
+  },
+  "rally_03": {
+    "video_path": "runs/run_20261016_114958/rallies/rally_03/video.mp4",
+    "fps": 25.0,
+    "events": [
+      {"frame": 70, "player_id": 2, "shot_type": "Serve"},
+      {"frame": 108, "player_id": 1, "shot_type": "Forehand"},
+      {"frame": 221, "player_id": 1, "shot_type": "Forehand"},
+      {"frame": 415, "player_id": 2, "shot_type": "Backhand"},
+      {"frame": 475, "player_id": 2, "shot_type": "Backhand"},
+      {"frame": 551, "player_id": 2, "shot_type": "Backhand"}
+    ]
+  },
+  "rally_09": {
+    "video_path": "runs/run_20261016_114958/rallies/rally_09/video.mp4",
+    "fps": 25.0,
+    "events": [
+      {"frame": 107, "player_id": 1, "shot_type": "Serve"},
+      {"frame": 136, "player_id": 2, "shot_type": "Backhand"},
+      {"frame": 198, "player_id": 1, "shot_type": "Forehand"}
+    ]
+  }
+}

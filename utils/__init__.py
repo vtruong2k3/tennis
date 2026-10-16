@@ -37,3 +37,14 @@ from .court_validity import (
 )
 from .hawkeye import HawkeyeCall, call_bounce, draw_hawkeye_badge
 from .tactical_metrics import PlayerTacticalProfile, compute_tactical_metrics
+from .audio_impact_detector import AudioImpactDetector, detect_audio_impact_candidates
+from .temporal_subsample import (
+    get_subsample_stride,
+    subsample_frames,
+    interpolate_bboxes,
+    interpolate_points_dict,
+    upsample_event_frames,
+    upsample_event_dict,
+    refine_contact_frames_to_native_fps,
+    upsample_and_refine_event_dict,
+)
