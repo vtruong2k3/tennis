@@ -22,31 +22,32 @@ class PlayerTracker:
     def choose_and_filter_players(self, player_detections, court_keypoints):
         """
         Choose the two players once for the whole clip, then keep only their tracks.
-
-        Evidence is aggregated over every frame rather than read off frame 0. A
-        broadcast clip's first frame is arbitrary - it may open on a replay wipe or
-        with a player off-screen - and in any single frame a line judge or ball kid
-        can outscore a real player. Track persistence across the clip is what
-        separates them: players are present for most of a rally, incidental people
-        are not.
+        Stitches disjoint track fragments of the same player (from rapid movements or
+        brief occlusions) into the primary player ID of that court half.
         """
-        chosen_player = self._choose_players_over_clip(player_detections, court_keypoints)
+        chosen_player, stitch_map = self._choose_players_and_stitch_map(player_detections, court_keypoints)
         filtered_player_detections = []
         for player_dict in player_detections:
-            filtered_player_dict = {track_id: bbox for track_id, bbox in player_dict.items() if track_id in chosen_player}
+            filtered_player_dict = {}
+            for target_id in chosen_player:
+                if target_id in player_dict:
+                    filtered_player_dict[target_id] = player_dict[target_id]
+                else:
+                    for src_id, mapped_id in stitch_map.items():
+                        if mapped_id == target_id and src_id in player_dict:
+                            filtered_player_dict[target_id] = player_dict[src_id]
+                            break
             filtered_player_detections.append(filtered_player_dict)
 
         return filtered_player_detections
 
     def _choose_players_over_clip(self, player_detections, court_keypoints):
-        """
-        Rank every track seen anywhere in the clip and return the chosen track ids.
+        chosen, _ = self._choose_players_and_stitch_map(player_detections, court_keypoints)
+        return chosen
 
-        Returns one player per court half when both halves yield a qualifying
-        track. When only one does - a camera angle where the near baseline sits
-        outside the frame, for instance - it returns that single player rather than
-        promoting the next-best track, which in practice is a line judge or ball
-        kid and would poison every downstream metric.
+    def _choose_players_and_stitch_map(self, player_detections, court_keypoints):
+        """
+        Rank every track seen anywhere in the clip and return chosen IDs and a stitch map.
         """
         totals = {}
         for player_dict in player_detections:
@@ -62,7 +63,7 @@ class PlayerTracker:
 
         if not totals:
             print("  [PLAYER SELECTION V3] WARNING: no player tracks found in clip")
-            return []
+            return [], {}
 
         min_frames = max(1, int(len(player_detections) * self.MIN_TRACK_PERSISTENCE))
         candidates = [
@@ -78,13 +79,6 @@ class PlayerTracker:
             if acc['frames'] >= min_frames
         ]
 
-        print(f"  [PLAYER SELECTION V3] {len(totals)} tracks seen, "
-              f"{len(candidates)} persist ≥{min_frames}/{len(player_detections)} frames:")
-        for c in sorted(candidates, key=lambda c: c['score'], reverse=True):
-            half = "BOTTOM" if c['is_bottom_half'] else "TOP"
-            print(f"    ID {c['id']}: mean score={c['score']:.1f}, "
-                  f"seen={c['frames']}, half={half}")
-
         # No track cleared the persistence bar (very short or heavily occluded
         # clip). Fall back to the longest-lived tracks so the run still produces
         # something, and say so.
@@ -92,7 +86,7 @@ class PlayerTracker:
             print("  [PLAYER SELECTION V3] WARNING: no track met persistence bar, "
                   "falling back to longest-lived")
             longest = sorted(totals.items(), key=lambda kv: kv[1]['frames'], reverse=True)
-            return [track_id for track_id, _ in longest[:2]]
+            return [track_id for track_id, _ in longest[:2]], {}
 
         def rank_key(c):
             # Weight mean score by persistence square root so persistent player tracks
@@ -114,8 +108,36 @@ class PlayerTracker:
             print("  [PLAYER SELECTION V3] WARNING: only one half has a qualifying "
                   "player - analysing a single player rather than guessing a second")
 
-        print(f"  [PLAYER SELECTION V3] Final chosen: {[c['id'] for c in chosen]}")
-        return [c['id'] for c in chosen]
+        chosen_ids = [c['id'] for c in chosen]
+        stitch_map = {}
+
+        # 1. Stitch secondary qualifying tracks on bottom half
+        if bottom:
+            primary_b = bottom[0]
+            p_frames = set(i for i, p in enumerate(player_detections) if primary_b['id'] in p)
+            for cand in bottom[1:]:
+                if cand['score'] >= 0.70 * primary_b['score']:
+                    c_frames = set(i for i, p in enumerate(player_detections) if cand['id'] in p)
+                    overlap = len(p_frames & c_frames)
+                    if overlap <= 0.15 * max(1, len(c_frames)):
+                        stitch_map[cand['id']] = primary_b['id']
+
+        # 2. Stitch secondary qualifying tracks on top half
+        if top:
+            primary_t = top[0]
+            p_frames = set(i for i, p in enumerate(player_detections) if primary_t['id'] in p)
+            for cand in top[1:]:
+                if cand['score'] >= 0.70 * primary_t['score']:
+                    c_frames = set(i for i, p in enumerate(player_detections) if cand['id'] in p)
+                    overlap = len(p_frames & c_frames)
+                    if overlap <= 0.15 * max(1, len(c_frames)):
+                        stitch_map[cand['id']] = primary_t['id']
+
+        if stitch_map:
+            print(f"  [PLAYER SELECTION V3] Stitched track fragments to primary players: {stitch_map}")
+
+        print(f"  [PLAYER SELECTION V3] Final chosen: {chosen_ids}")
+        return chosen_ids, stitch_map
 
 
     def choose_players(self, court_keypoints, player_dict):

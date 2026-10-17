@@ -103,3 +103,23 @@ def test_classifier_engine_with_ball_kinematics():
     )
     assert shot_type in engine.CLASSES
     assert 0.0 <= conf <= 1.0
+
+
+def test_non_opening_shot_cannot_be_serve():
+    """Verify tennis grammar invariant: shots after the opening shot are never Serve."""
+    engine = TemporalShotClassifierEngine()
+    total_frames = 25
+    fake_frames = [np.full((720, 1280, 3), 128, dtype=np.uint8) for _ in range(total_frames)]
+    # Player at baseline
+    fake_player_dets = [{1: [300, 450, 450, 680]} for _ in range(total_frames)]
+
+    shot_type, conf = engine.classify_shot(
+        video_frames=fake_frames,
+        shot_frame=12,
+        player_detections=fake_player_dets,
+        player_id=1,
+        is_serve=False,
+        is_first_shot=False,
+    )
+    assert shot_type != "Serve"
+

@@ -60,7 +60,7 @@ from utils import (
 from utils.bounce_candidates import detect_bounce_candidates
 from utils.calibration_banner import draw_calibration_warning
 from utils.fps_support import SUPPORTED_MAX_FPS, SUPPORTED_MIN_FPS, assess_fps, assess_fps_with_subsampling
-from utils.serve_detector import detect_serve_frames
+from utils.serve_detector import detect_serve_frames, find_or_recover_serve
 from utils.serve_landing import find_serve_landing
 from utils.shot_physics import classify_from_physics, is_lob
 from utils.rally_audit import audit_rally
@@ -879,12 +879,15 @@ def main():
         # Serves are identified from physical evidence (ball struck above the
         # player's head, from a baseline) rather than from position in the sequence.
         court_kp = mini_court.get_court_drawing_keypoints()
-        serve_frames = detect_serve_frames(
+        serve_f, ball_shot_frames = find_or_recover_serve(
             ball_shot_frames, ball_detections, player_detections, player_mini_court,
             far_baseline_y=court_kp[1], near_baseline_y=court_kp[5],
             fps=fps,
             single_rally=True,
+            video_frames=video_frames,
+            pose_model_path=cfg["models"].get("yolo_pose", "yolo11n-pose.pt"),
         )
+        serve_frames = [serve_f] if serve_f is not None else []
         logger.info(f"  Serve detection: {len(serve_frames)} of {len(ball_shot_frames)} "
                     f"contacts carry serve evidence {serve_frames if serve_frames else ''}")
 
@@ -977,8 +980,10 @@ def main():
                     )
                     logger.info("  Pose backend: Temporal Shot Classifier (YOLO11-Pose + 21-frame Temporal Sequence)")
                     upgraded = 0
+                    first_shot_frame = min(shot_classifications.keys()) if shot_classifications else None
                     for shot_frame, info in shot_classifications.items():
                         is_serve = (info.get("shot_type") == "Serve")
+                        is_first = (shot_frame == first_shot_frame)
                         res_shot, conf = temporal_engine.classify_shot(
                             video_frames=video_frames,
                             shot_frame=shot_frame,
@@ -986,13 +991,26 @@ def main():
                             player_id=info["player_id"],
                             ball_detections=ball_detections,
                             is_serve=is_serve,
+                            is_first_shot=is_first,
                         )
                         if res_shot is not None:
+                            # Hard grammar constraint: Non-opening shots can never be Serve
+                            if res_shot == "Serve" and not is_first and not is_serve:
+                                res_shot = "Forehand"
                             old_type = info["shot_type"]
                             info["shot_type"] = res_shot
                             info["pose_confidence"] = round(float(conf), 2)
                             upgraded += 1
                             logger.debug(f"  Frame {shot_frame}: Temporal Pose -> {res_shot} ({conf:.2f}) [was {old_type}]")
+
+                    # Invariant: At most 1 Serve per rally, strictly at opening
+                    serve_frames_found = [sf for sf, sc in shot_classifications.items() if sc.get("shot_type") == "Serve"]
+                    if len(serve_frames_found) > 1:
+                        first_sf = min(serve_frames_found)
+                        for extra_sf in serve_frames_found:
+                            if extra_sf != first_sf:
+                                shot_classifications[extra_sf]["shot_type"] = "Forehand"
+                                logger.info(f"  Grammar correction: Reclassified redundant mid-rally Serve at frame {extra_sf} to Forehand")
                     logger.info(
                         f"  Temporal Pose shot analysis: {upgraded} of "
                         f"{len(shot_classifications)} shots analyzed with 21-frame temporal pose"
@@ -1398,16 +1416,18 @@ def main():
             else:
                 # A contact is airborne: use the hitting player's feet instead.
                 players = player_detections[frame] if frame < len(player_detections) else {}
-                bbox = ball_detections[frame].get(1) if frame < len(ball_detections) else None
-                if not players or bbox is None:
+                if not players:
                     continue
-                # Same attribution the rally grammar uses (utils.hit_bounce_classifier),
-                # rather than a second copy of the rule: two implementations of "who hit
-                # it" can disagree, and the audit would then be checking a different
-                # answer from the one drawn. Unbounded here because a contact has to be
-                # placed somewhere, while the grammar prefers None over a wrong guess.
-                hitter = striking_side(frame, ball_detections, player_detections)
-                if hitter is None:
+                if frame in serve_frames and frame in shot_classifications:
+                    hitter = shot_classifications[frame].get("player_id")
+                    if hitter is None or hitter not in players:
+                        hitter = list(players.keys())[0]
+                else:
+                    bbox = ball_detections[frame].get(1) if frame < len(ball_detections) else None
+                    if bbox is None:
+                        continue
+                    hitter = striking_side(frame, ball_detections, player_detections)
+                if hitter is None or hitter not in players:
                     continue
                 px1, _, px2, py2 = players[hitter]
                 point = ((px1 + px2) / 2.0, float(py2))

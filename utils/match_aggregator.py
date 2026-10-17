@@ -94,9 +94,10 @@ def aggregate_match_runs(
             for sub_r in rally_list:
                 entry = dict(sub_r)
                 entry["rallyIndex"] = rally_idx
-                # Adjust timestamps to original match timeline
-                entry["startMs"] = abs_start_ms
-                entry["endMs"] = abs_end_ms
+                # Adjust timestamps to original match timeline if available
+                if abs_end_ms > 0:
+                    entry["startMs"] = abs_start_ms
+                    entry["endMs"] = abs_end_ms
                 all_rallies.append(entry)
         else:
             # Fallback rally construct if rallies key was empty
@@ -167,6 +168,9 @@ def aggregate_match_runs(
                             csv_fieldnames = ["rally_index", "abs_timestamp_s"] + [
                                 f for f in reader.fieldnames if f not in ("rally_index", "abs_timestamp_s")
                             ]
+                        for fn in reader.fieldnames:
+                            if fn not in csv_fieldnames:
+                                csv_fieldnames.append(fn)
                         for row in reader:
                             row_dict = dict(row)
                             row_dict["rally_index"] = rally_idx
@@ -255,7 +259,7 @@ def aggregate_match_runs(
     # ── Write root stats.csv ────────────────────────────────────────────────
     if csv_rows and csv_fieldnames:
         with open(run_dir / "stats.csv", "w", encoding="utf-8", newline="") as cf:
-            writer = csv.DictWriter(cf, fieldnames=csv_fieldnames)
+            writer = csv.DictWriter(cf, fieldnames=csv_fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(csv_rows)
 

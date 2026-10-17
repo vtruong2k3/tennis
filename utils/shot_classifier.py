@@ -76,19 +76,45 @@ class ShotClassifier:
                                if i + 1 < len(ball_shot_frames) else None)
 
             # Get player who made the shot (closest to ball at shot frame)
-            player_positions = player_mini_court_detections[shot_frame]
-            if not player_positions or not ball_mini_court_detections.get(shot_frame, {}).get(1):
+            player_positions = player_mini_court_detections.get(shot_frame, {})
+            if not player_positions:
+                for off in (-1, 1, -2, 2, -3, 3):
+                    fn = shot_frame + off
+                    if fn in player_mini_court_detections and player_mini_court_detections[fn]:
+                        player_positions = player_mini_court_detections[fn]
+                        break
+
+            ball_pos = ball_mini_court_detections.get(shot_frame, {}).get(1)
+            if not ball_pos:
+                for off in (-1, 1, -2, 2, -3, 3, -4, 4):
+                    fn = shot_frame + off
+                    if fn in ball_mini_court_detections and ball_mini_court_detections[fn].get(1):
+                        ball_pos = ball_mini_court_detections[fn][1]
+                        break
+
+            if not player_positions:
                 continue
-                
-            ball_pos = ball_mini_court_detections[shot_frame][1]
-            player_shot_id = min(player_positions.keys(), 
-                               key=lambda x: measure_distance_between_points(player_positions[x], ball_pos))
+
+            if shot_frame in serve_frames:
+                # For serve, hitting player is the baseline player
+                if ball_pos:
+                    player_shot_id = min(player_positions.keys(), 
+                                       key=lambda x: measure_distance_between_points(player_positions[x], ball_pos))
+                else:
+                    net_y = mini_court_height / 2.0
+                    player_shot_id = max(player_positions.keys(),
+                                       key=lambda x: abs(player_positions[x][1] - net_y))
+            else:
+                if not ball_pos:
+                    continue
+                player_shot_id = min(player_positions.keys(), 
+                                   key=lambda x: measure_distance_between_points(player_positions[x], ball_pos))
             
             # Extract player and ball positions
             player_pos = player_positions[player_shot_id]
             player_y = player_pos[1]
             player_x = player_pos[0]
-            ball_x = ball_pos[0]
+            ball_x = ball_pos[0] if ball_pos else player_x
             
             # Get ball trajectory. Unavailable for the final shot (no successor to
             # measure against), which is a real absence rather than a zero measurement.

@@ -404,7 +404,7 @@ async def run_pipeline_worker(run_id: str, video_path: str):
                     min_rally_duration_s=3.5,
                     max_gap_tolerance_s=1.0,
                     sample_interval_s=0.5,
-                    lead_in_buffer_s=2.2,
+                    lead_in_buffer_s=3.2,
                     lead_out_buffer_s=1.5,
                 ),
             )

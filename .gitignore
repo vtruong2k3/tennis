@@ -41,6 +41,7 @@ Thumbs.db
 
 # ── Local-only dev files (not for contributors) ──
 CLAUDE.md
+scratch/
 
 # docs/ is the internal record: the engineering journal, specs, scratch analysis and
 # unfinished reasoning. It stays private. Public reproducibility is not the same thing

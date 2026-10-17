@@ -350,10 +350,15 @@ def merge_nearby_candidates(
         if gap_from_start <= gap_frames:
             mag_c, angle_c = candidate_impulses[c]
             mag_p, angle_p = candidate_impulses[prev_cluster[-1]]
+            # In tennis, two separate player contacts cannot physically occur within 0.20s
+            # even in the fastest volley exchange. Candidates within min_distinct_gap represent
+            # duplicate detections of the same physical contact (e.g. acoustic onset + visual reversal)
+            # and must collapse together.
+            min_distinct_gap = max(6, int(round(0.20 * fps)))
             is_distinct_hit = (
-                (c - prev_cluster[-1] >= 3)
-                and (mag_c > 4.0 and mag_p > 4.0)
-                and (angle_c > 40.0 and angle_p > 40.0)
+                (c - prev_cluster[-1] >= min_distinct_gap)
+                and (mag_c > 6.0 and mag_p > 6.0)
+                and (angle_c > 60.0 and angle_p > 60.0)
             )
             if is_distinct_hit:
                 clusters.append([c])
@@ -476,14 +481,20 @@ def striking_side(
         return None
     bbox = ball_detections[frame].get(1) if frame < len(ball_detections) else None
     players = player_detections[frame] if frame < len(player_detections) else {}
-    if bbox is None or not players:
-        for offset in (-1, 1, -2, 2):
+    if bbox is None:
+        for offset in (-1, 1, -2, 2, -3, 3):
             fn = frame + offset
-            if 0 <= fn < len(ball_detections) and 0 <= fn < len(player_detections):
+            if 0 <= fn < len(ball_detections):
                 b = ball_detections[fn].get(1)
-                p = player_detections[fn]
-                if b is not None and p:
+                if b is not None:
                     bbox = b
+                    break
+    if not players:
+        for offset in (-1, 1, -2, 2, -3, 3, -4, 4, -5, 5):
+            fn = frame + offset
+            if 0 <= fn < len(player_detections):
+                p = player_detections[fn]
+                if p:
                     players = p
                     break
     if bbox is None or not players:
@@ -695,8 +706,8 @@ def derive_shot_frames(
             return float("inf"), 100.0
         min_d = float("inf")
         best_box_h = 100.0
-        # Check +/- 2 frames to be robust to single-frame ball blur or player occlusion
-        for offset in (0, -1, 1, -2, 2):
+        # Check +/- 4 frames to be robust to single-frame ball blur or player occlusion
+        for offset in (0, -1, 1, -2, 2, -3, 3, -4, 4):
             fn = frame_idx + offset
             if 0 <= fn < len(ball_detections) and 0 <= fn < len(player_detections):
                 bbox = ball_detections[fn].get(1)

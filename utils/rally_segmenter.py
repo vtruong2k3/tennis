@@ -114,7 +114,7 @@ def segment_video_rallies(
     sample_interval_s: float = 0.5,
     min_rally_duration_s: float = 3.5,
     max_gap_tolerance_s: float = 1.0,
-    lead_in_buffer_s: float = 2.2,
+    lead_in_buffer_s: float = 3.2,
     lead_out_buffer_s: float = 1.5,
     boundary_buffer_s: float | None = None,
 ) -> list[dict[str, Any]]:

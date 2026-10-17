@@ -139,6 +139,7 @@ class TemporalShotClassifierEngine:
         ball_pos: tuple[float, float] | None = None,
         ball_detections: Sequence[dict] | None = None,
         is_serve: bool = False,
+        is_first_shot: bool = False,
         ball_velocity_y: float | None = None,
         player_y_rel: float | None = None,
     ) -> tuple[str, float]:
@@ -266,12 +267,27 @@ class TemporalShotClassifierEngine:
                 swing_is_fh = (r_wrist_dx < 0) if not is_top_player else (r_wrist_dx > 0)
                 probs[SHOT_CLASSES.index("Forehand" if swing_is_fh else "Backhand")] += 0.70
 
-        # 6. Physical Context Fusion (Net proximity -> Volley, steep downward smash)
+        # 6. Physical Context Fusion (Net proximity -> Volley, steep downward smash, overhead baseline -> Serve)
         if ball_velocity_y is not None and player_y_rel is not None:
             if abs(player_y_rel - 0.5) < 0.15:
                 probs[SHOT_CLASSES.index("Volley")] += 0.90
             if ball_velocity_y > 15.0:
                 probs[SHOT_CLASSES.index("Smash")] += 0.85
+
+        # Overhead serve motion check from temporal skeleton (strictly limited to opening shot of rally)
+        if is_serve or is_first_shot:
+            min_sho_y = min(float(norm_skeleton[:, L_SHOULDER, 1].min()), float(norm_skeleton[:, R_SHOULDER, 1].min()))
+            min_wri_y = min(float(norm_skeleton[:, L_WRIST, 1].min()), float(norm_skeleton[:, R_WRIST, 1].min()))
+            overhead_reach = min_sho_y - min_wri_y
+            is_baseline_player = (
+                (player_y_rel is not None and abs(player_y_rel - 0.5) > 0.18)
+                or (p_box is not None and (p_box[1] < 0.38 * frame_h or p_box[3] > 0.60 * frame_h))
+            )
+            if overhead_reach > 0.12 and is_baseline_player:
+                probs[SHOT_CLASSES.index("Serve")] += 0.95
+        else:
+            # Tennis rally grammar: Once rally is in play, groundstrokes/volleys cannot be a Serve
+            probs[SHOT_CLASSES.index("Serve")] = 0.0
 
         # Re-normalize probabilities
         best_idx = int(np.argmax(probs))

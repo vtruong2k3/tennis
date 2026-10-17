@@ -51,9 +51,9 @@ BASELINE_TOLERANCE_FRAC = 0.18
 
 # The ball clearance threshold expressed as a fraction from the bounding box top (py1).
 # During a serve, YOLO boxes include the raised arm and racket, pushing py1 well above
-# the player's anatomical head. Allowing up to 0.22 * box_height ensures contacts inside
+# the player's anatomical head. Allowing up to 0.35 * box_height ensures contacts inside
 # the overhead racket-reach zone are properly identified as overhead serves.
-HEAD_CLEARANCE_FRAC = 0.22
+HEAD_CLEARANCE_FRAC = 0.35
 
 # Two serves cannot be this close together. A point does not start twice inside a few
 # seconds, and even a fault followed by a second serve leaves time to retrieve a ball and
@@ -115,9 +115,9 @@ def is_serve(
     if frame >= len(ball_detections) or frame >= len(player_detections):
         return result(False, "frame out of range")
 
-    # Temporal fallback for ball detection (search +/-2 frames if missing on contact)
+    # Temporal fallback for ball detection (search +/-4 frames if missing on contact)
     ball_box = None
-    for offset in (0, -1, 1, -2, 2):
+    for offset in (0, -1, 1, -2, 2, -3, 3, -4, 4):
         fn = frame + offset
         if 0 <= fn < len(ball_detections):
             box = ball_detections[fn].get(1)
@@ -130,7 +130,7 @@ def is_serve(
     # Temporal fallback for player detections
     frame_players = player_detections[frame] if frame < len(player_detections) else {}
     if not frame_players:
-        for offset in (-1, 1, -2, 2):
+        for offset in (-1, 1, -2, 2, -3, 3, -4, 4):
             fn = frame + offset
             if 0 <= fn < len(player_detections) and player_detections[fn]:
                 frame_players = player_detections[fn]
@@ -155,7 +155,7 @@ def is_serve(
     # ── Evidence 2: struck from the baseline or behind it ─────────────────────
     position = player_mini_court.get(frame, {}).get(player_id)
     if position is None:
-        for offset in (-1, 1, -2, 2, -3, 3):
+        for offset in (-1, 1, -2, 2, -3, 3, -4, 4, -5, 5):
             fn = frame + offset
             pos = player_mini_court.get(fn, {}).get(player_id)
             if pos is not None:
@@ -247,16 +247,23 @@ def detect_serve_frames(
     if single_rally:
         if not contact_frames:
             return []
-        first_contact = sorted(contact_frames)[0]
+        sorted_contacts = sorted(contact_frames)
+        first_contact = sorted_contacts[0]
         # In a single rally, only the opening shot can be a serve
         opening_window = max(1, int(round(0.75 * max(fps, 1.0))))
         opening_candidates = [
             f for f in candidates
             if abs(f - first_contact) <= opening_window
         ]
-        if not opening_candidates:
-            return []
-        return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections, player_mini_court))]
+        if opening_candidates:
+            return [max(opening_candidates, key=lambda f: _ball_clearance(f, ball_detections, player_detections, player_mini_court))]
+        # If the very first contact was a pre-serve noise frame (e.g. pre-serve dribble/bounce),
+        # allow the first serve candidate if it occurs before the main cross-court rally exchanges.
+        first_candidate = candidates[0]
+        earlier_contacts = [c for c in sorted_contacts if c < first_candidate]
+        if not earlier_contacts or (len(earlier_contacts) <= 1 and (first_candidate - earlier_contacts[0]) <= 2.5 * fps):
+            return [first_candidate]
+        return []
 
     if len(candidates) < 2:
         return candidates
@@ -274,3 +281,95 @@ def detect_serve_frames(
         max(cluster, key=lambda f: _ball_clearance(f, ball_detections, player_detections))
         for cluster in clusters
     ]
+
+
+def find_or_recover_serve(
+    contact_frames: list[int],
+    ball_detections: list[dict],
+    player_detections: list[dict],
+    player_mini_court: dict,
+    far_baseline_y: float,
+    near_baseline_y: float,
+    fps: float = 30.0,
+    single_rally: bool = True,
+    video_frames=None,
+    pose_model_path: str = "yolo11n-pose.pt",
+) -> tuple[int | None, list[int]]:
+    """
+    Finds the opening serve frame, or recovers it from physical ball/pose evidence
+    if missed by upstream contact derivation.
+
+    Returns:
+        (serve_frame, updated_contact_frames)
+    """
+    serves = detect_serve_frames(
+        contact_frames, ball_detections, player_detections, player_mini_court,
+        far_baseline_y, near_baseline_y, fps=fps, single_rally=single_rally
+    )
+    if serves:
+        serve_f = serves[0]
+        updated = [serve_f] + [c for c in contact_frames if c > serve_f + int(0.3 * fps)]
+        return serve_f, sorted(updated)
+
+    # Recovery Phase A: Search opening window for ball-based serve evidence
+    search_end = min(len(ball_detections), int(6.0 * fps))
+    if contact_frames:
+        search_end = min(search_end, contact_frames[-1] if len(contact_frames) == 1 else contact_frames[1])
+
+    candidates = [
+        f for f in range(0, search_end)
+        if is_serve(f, ball_detections, player_detections, player_mini_court,
+                    far_baseline_y, near_baseline_y)
+    ]
+
+    if candidates:
+        min_gap = max(1, int(round(MIN_SERVE_SEPARATION_S * max(fps, 1.0))))
+        clusters = [[candidates[0]]]
+        for f in candidates[1:]:
+            if f - clusters[-1][0] <= min_gap:
+                clusters[-1].append(f)
+            else:
+                clusters.append([f])
+        best_serve = max(clusters[0], key=lambda f: _ball_clearance(f, ball_detections, player_detections, player_mini_court))
+        updated = [best_serve] + [c for c in contact_frames if c > best_serve + int(0.3 * fps)]
+        return best_serve, sorted(updated)
+
+    # Recovery Phase B: Biomechanical overhead swing scan from YOLO-Pose
+    if video_frames is not None and len(video_frames) > 0:
+        try:
+            from ultralytics import YOLO
+            pose_net = YOLO(pose_model_path)
+            overhead_peaks = []
+            h, w = video_frames[0].shape[:2]
+            scan_limit = min(search_end, len(video_frames), len(player_detections))
+            for f in range(scan_limit):
+                players = player_detections[f]
+                for pid, box in players.items():
+                    py_mid = (box[1] + box[3]) / 2.0
+                    if not (py_mid < 0.45 * h or py_mid > 0.55 * h):
+                        continue
+                    x1, y1, x2, y2 = [int(v) for v in box]
+                    bh = y2 - y1
+                    pad_y = int(bh * 0.25)
+                    pad_x = int((x2 - x1) * 0.2)
+                    crop = video_frames[f][max(0, y1-pad_y):min(h, y2+pad_y), max(0, x1-pad_x):min(w, x2+pad_x)]
+                    if crop.size == 0:
+                        continue
+                    res = pose_net.predict(crop, verbose=False)[0]
+                    if res.keypoints is None or len(res.keypoints) == 0:
+                        continue
+                    kps = res.keypoints.data[0].cpu().numpy()
+                    sho = min(kps[5][1], kps[6][1])
+                    wri = min(kps[9][1], kps[10][1])
+                    diff = sho - wri
+                    if diff > 0.10 * bh:
+                        overhead_peaks.append((f, diff))
+            if overhead_peaks:
+                pose_serve = max(overhead_peaks, key=lambda x: x[1])[0]
+                updated = [pose_serve] + [c for c in contact_frames if c > pose_serve + int(0.3 * fps)]
+                return pose_serve, sorted(updated)
+        except Exception:
+            pass
+
+    return None, contact_frames
+

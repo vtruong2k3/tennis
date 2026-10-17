@@ -179,3 +179,40 @@ def test_empty_input_does_not_raise(selected):
     result = assess_selection(selected, NET_Y, people_detected=0)
     assert result.status == SELECTION_FAILED
     json.dumps(result.as_dict())
+
+
+def test_player_track_stitching():
+    """Verify that PlayerTracker stitches fragmented track IDs within court halves."""
+    from trackers.player_tracker import PlayerTracker
+    pt = PlayerTracker.__new__(PlayerTracker)
+
+    court_kp = [
+        580, 240, 1340, 240, 450, 480, 1470, 480,
+        250, 920, 1670, 920, 450, 240, 1470, 240,
+        450, 920, 1470, 920, 960, 240, 960, 920,
+        960, 480, 960, 700
+    ]
+
+    # 100 frames:
+    # First 50 frames: Bottom player is ID 2, Top player is ID 3
+    # Next 50 frames: Bottom player is ID 35, Top player is ID 38
+    player_dets = []
+    for i in range(100):
+        frame = {}
+        if i < 50:
+            frame[2] = [800, 700, 900, 850]    # bottom
+            frame[3] = [800, 280, 880, 390]    # top
+        else:
+            frame[35] = [810, 710, 910, 860]   # bottom
+            frame[38] = [810, 290, 890, 400]   # top
+        player_dets.append(frame)
+
+    filtered = pt.choose_and_filter_players(player_dets, court_kp)
+    assert len(filtered) == 100
+
+    # Ensure coverage is 100% across all 100 frames after stitching
+    all_keys = set(k for f in filtered for k in f)
+    assert len(all_keys) == 2
+    for f in filtered:
+        assert len(f) == 2
+
